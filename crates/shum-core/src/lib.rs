@@ -15,6 +15,7 @@ pub mod noise;
 pub mod nostr;
 pub mod packet;
 pub mod profile;
+pub mod wire;
 
 #[cfg(feature = "uniffi")]
 uniffi::setup_scaffolding!();
