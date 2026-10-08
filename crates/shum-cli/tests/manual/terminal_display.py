@@ -56,7 +56,7 @@ for program in (["Apple_Terminal"] if legacy else ["Apple_Terminal", "WarpTermin
                 assert not rgb, "unsupported RGB output"
                 assert any(b"48;5;232" in sequence for sequence in sgr), ("missing dark indexed background", sgr[:10])
                 assert b"\x1b]1337;" not in raw
-                assert "▀".encode() not in raw and "▄".encode() not in raw, "Apple Terminal avatars must not depend on block glyphs"
+                assert not any(g.encode() in raw for g in "▀▄"), "portraits must be independent of font glyphs"
                 assert b"Shum" in raw and "ШУМ".encode() not in raw
                 print("PASS Apple Terminal: indexed colours, dark background, Shum title")
             else:
@@ -93,7 +93,7 @@ for program in (["Apple_Terminal"] if legacy else ["Apple_Terminal", "WarpTermin
                         break
                 assert proc.returncode == 0, raw[-1000:]
                 assert b"48;5;" in raw and b"38;2;" not in raw and b"48;2;" not in raw
-                assert "▀".encode() not in raw and "▄".encode() not in raw, "no block glyphs in standalone avatars"
+                assert not any(g.encode() in raw for g in "▀▄"), "standalone avatars must use backgrounds too"
                 print("PASS Apple Terminal: standalone avatar uses indexed colours")
         finally:
             if proc.poll() is None:

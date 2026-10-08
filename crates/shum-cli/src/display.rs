@@ -30,7 +30,6 @@ pub struct Display {
     pub colors: Colors,
     pub images: ProtocolType,
     pub direct_images: bool,
-    pub cell_avatars: bool,
 }
 impl Display {
     pub fn detect() -> Self {
@@ -77,7 +76,6 @@ impl Display {
             colors: if rgb { Colors::Rgb } else { Colors::Indexed },
             images,
             direct_images: program == "WarpTerminal",
-            cell_avatars: program == "Apple_Terminal",
         }
     }
 }

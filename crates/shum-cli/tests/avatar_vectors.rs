@@ -1,33 +1,6 @@
 use serde_json::Value;
 use shum_cli::avatar;
 #[test]
-fn compact_portraits_keep_the_full_canvas_and_eye_colours() {
-    let mut source = avatar::Avatar {
-        pixels: vec![[0; 4]; 36 * 36],
-    };
-    source.pixels[..4 * 36].fill([0, 200, 0, 255]);
-    source.pixels[32 * 36..].fill([0, 0, 200, 255]);
-    let compact = source.compact_cells(avatar::Kind::Person);
-    assert_eq!(compact.len(), 81);
-    assert!(compact[..9].iter().all(|p| *p == [0, 200, 0, 255]));
-    assert!(compact[8 * 9..].iter().all(|p| *p == [0, 0, 200, 255]));
-    assert!(compact[9..8 * 9].iter().all(|p| *p == [0; 4]));
-
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../protocol/vectors/01-avatar-pixels.json"
-    ))
-    .unwrap();
-    for case in fixture["cases"].as_array().unwrap() {
-        let seed = case["seed"].as_str().unwrap().parse().unwrap();
-        let source = avatar::render_subject(seed);
-        let compact = source.compact_cells(avatar::kind(seed));
-        let detail = source.sampled(18);
-        assert_eq!(compact[4 * 9 + 3], detail[8 * 18 + 7]);
-        assert_eq!(compact[4 * 9 + 5], detail[8 * 18 + 10]);
-        assert!(compact[8 * 9..].iter().any(|p| p[3] == 255));
-    }
-}
-#[test]
 fn terminal_downsampling_preserves_centered_details_and_transparent_colors() {
     let mut a = avatar::Avatar {
         pixels: vec![[255, 255, 255, 255]; 36 * 36],
@@ -85,4 +58,20 @@ fn exact_swift_avatar_pixels() {
             );
         }
     }
+}
+
+#[test]
+fn compact_geometry_retains_eyes_mouth_and_shoulders() {
+    let person = avatar::render_cells(0);
+    let animal = avatar::render_cells(1);
+    for (pixels, eye) in [(&person, [39, 35, 37, 255]), (&animal, [40, 37, 41, 255])] {
+        assert_eq!(pixels.len(), 144);
+        assert_eq!(pixels[5 * 12 + 5], eye);
+        assert_eq!(pixels[5 * 12 + 7], eye);
+        assert_ne!(pixels[5 * 12 + 6], eye, "eyes must stay separate");
+        assert_ne!(pixels[11 * 12 + 2][3], 0, "left shoulder must remain");
+        assert_ne!(pixels[11 * 12 + 9][3], 0, "right shoulder must remain");
+        assert_eq!(pixels[0][3], 0, "transparent canvas must remain");
+    }
+    assert_eq!(person[7 * 12 + 5], [151, 75, 74, 255], "mouth must remain");
 }

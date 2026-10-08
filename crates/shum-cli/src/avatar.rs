@@ -47,64 +47,22 @@ pub fn kind(seed: u64) -> Kind {
 pub struct Avatar {
     pub pixels: Vec<[u8; 4]>,
 }
-impl Avatar {
-    /// The entire v1 portrait on a 9×9 grid for background-coloured cells.
-    /// Keep the source palette instead of blurring neighbouring colours.
-    pub fn compact_cells(&self, kind: Kind) -> Vec<[u8; 4]> {
-        let mut result = vec![[0; 4]; 9 * 9];
-        for y in 0..9 {
-            for x in 0..9 {
-                let mut colors = std::collections::BTreeMap::new();
-                let mut coverage = 0;
-                for sy in y * 4..y * 4 + 4 {
-                    for sx in x * 4..x * 4 + 4 {
-                        let pixel = self.pixels[sy * 36 + sx];
-                        if pixel[3] > 0 {
-                            *colors.entry(pixel).or_insert(0) += 1;
-                            coverage += 1;
-                        }
-                    }
-                }
-                if coverage >= 8 {
-                    // Colour breaks ties consistently on both sides of a face.
-                    result[y * 9 + x] = colors
-                        .into_iter()
-                        .max_by_key(|&(color, count)| (count, color))
-                        .unwrap()
-                        .0;
-                }
-            }
-        }
-        // Sample the v1 eyes and mouth from their original 2×2 regions so
-        // small facial details remain visible. Robots have a higher mouth.
-        let mouth_y = if kind == Kind::Robot { 20 } else { 22 };
-        for (x, y, sx, sy) in [(3, 4, 14, 16), (5, 4, 20, 16), (4, 5, 17, mouth_y)] {
-            let mut sum = [0_u32; 4];
-            for dy in 0..2 {
-                for dx in 0..2 {
-                    let pixel = self.pixels[(sy + dy) * 36 + sx + dx];
-                    let alpha = u32::from(pixel[3]);
-                    for i in 0..3 {
-                        sum[i] += u32::from(pixel[i]) * alpha;
-                    }
-                    sum[3] += alpha;
-                }
-            }
-            result[y * 9 + x] = std::array::from_fn(|i| {
-                if i == 3 {
-                    ((sum[3] + 2) / 4) as u8
-                } else {
-                    (sum[i] + sum[3] / 2).checked_div(sum[3]).unwrap_or(0) as u8
-                }
-            });
-        }
-        result
-    }
-
+struct Canvas {
+    pixels: Vec<[u8; 4]>,
+    side: usize,
+}
+impl Canvas {
     fn rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
-        for row in y..(y + h).min(36) {
-            for col in x..(x + w).min(36) {
-                let p = &mut self.pixels[row * 36 + col];
+        // Rasterize the source geometry at its destination resolution. Rounding
+        // a finished bitmap can skip a whole eye; each original feature instead
+        // gets at least one destination pixel, with the original draw order.
+        let scale = |v: usize| (v * self.side + 18) / 36;
+        let (left, top) = (scale(x), scale(y));
+        let right = scale(x + w).max(left + 1).min(self.side);
+        let bottom = scale(y + h).max(top + 1).min(self.side);
+        for row in top..bottom {
+            for col in left..right {
+                let p = &mut self.pixels[row * self.side + col];
                 for (dst, src) in p[..3].iter_mut().zip(c.rgb) {
                     // Quartz premultiplies the color before quantizing alpha.
                     let source = (f64::from(src) * c.alpha).round() as u16;
@@ -116,6 +74,8 @@ impl Avatar {
             }
         }
     }
+}
+impl Avatar {
     pub fn coarse18(&self) -> Vec<[u8; 4]> {
         (0..18)
             .flat_map(|y| (0..18).map(move |x| self.pixels[(y * 2 + 1) * 36 + x * 2 + 1]))
@@ -156,18 +116,30 @@ impl Avatar {
     }
 }
 pub fn render(seed: u64) -> Avatar {
-    render_impl(seed, true)
+    Avatar {
+        pixels: render_impl(seed, true, 36),
+    }
 }
 /// Client presentation: the v1 subject without its decorative square.
 /// `render` remains the exact, opaque Swift vector renderer.
 pub fn render_subject(seed: u64) -> Avatar {
-    render_impl(seed, false)
+    Avatar {
+        pixels: render_impl(seed, false, 36),
+    }
 }
-fn render_impl(seed: u64, backdrop: bool) -> Avatar {
+pub const CELL_SIDE: u16 = 12;
+pub const CELL_WIDTH: u16 = CELL_SIDE * 2;
+/// Font-independent client rendition: two background spaces per square pixel.
+/// The seed, palette, features and draw order are shared with the v1 portrait.
+pub fn render_cells(seed: u64) -> Vec<[u8; 4]> {
+    render_impl(seed, false, usize::from(CELL_SIDE))
+}
+fn render_impl(seed: u64, backdrop: bool, side: usize) -> Vec<[u8; 4]> {
     let mut random = Random(seed);
     let kind = kind(seed);
-    let mut canvas = Avatar {
-        pixels: vec![[0; 4]; 36 * 36],
+    let mut canvas = Canvas {
+        pixels: vec![[0; 4]; side * side],
+        side,
     };
     macro_rules! block {
         ($x:expr,$y:expr,$w:expr,$h:expr,$c:expr) => {
@@ -369,7 +341,7 @@ fn render_impl(seed: u64, backdrop: bool) -> Avatar {
             if accessory == 1 {
                 block!(8, 13, 2, 1, inner_ear);
             }
-            return canvas;
+            return canvas.pixels;
         }
         Kind::Alien => {
             block!(4, 15, 10, 3, shirt);
@@ -431,7 +403,7 @@ fn render_impl(seed: u64, backdrop: bool) -> Avatar {
                 block!(12, 7, 1, 1, headwear_color);
             }
             block!(6, 14, 6, 1, rgb(218, 220, 204));
-            return canvas;
+            return canvas.pixels;
         }
         Kind::Robot => {
             let display = rgb(52, 67, 73);
@@ -483,7 +455,7 @@ fn render_impl(seed: u64, backdrop: bool) -> Avatar {
                 block!(5, 12, 8, 1, rgb(83, 100, 107));
             }
             block!(7, 15, 4, 1, light);
-            return canvas;
+            return canvas.pixels;
         }
         Kind::Person => {}
     }
@@ -706,5 +678,5 @@ fn render_impl(seed: u64, backdrop: bool) -> Avatar {
             block!(5, 16, 8, 1, collar.alpha(0.35));
         }
     }
-    canvas
+    canvas.pixels
 }

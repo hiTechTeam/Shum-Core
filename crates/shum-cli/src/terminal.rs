@@ -213,37 +213,17 @@ pub fn avatar(seed: u64, ascii: bool) {
     if native_avatar(seed).unwrap_or(false) {
         return;
     }
-    let avatar = crate::avatar::render_subject(seed);
-    let display = crate::display::Display::detect();
-    if display.cell_avatars {
-        for row in avatar.compact_cells(crate::avatar::kind(seed)).chunks(9) {
-            print!("  ");
-            for &pixel in row {
-                if pixel[3] == 0 {
-                    print!("\x1b[0m  ");
-                } else {
-                    print!("{}  ", display.colors.sgr(pixel, true));
-                }
-            }
-            println!("\x1b[0m");
-        }
-        return;
-    }
-    let pixels = avatar.sampled(18);
-    let colors = display.colors;
-    for y in (0..18).step_by(2) {
+    let pixels = crate::avatar::render_cells(seed);
+    let colors = crate::display::Display::detect().colors;
+    let side = usize::from(crate::avatar::CELL_SIDE);
+    for row in pixels.chunks_exact(side) {
         print!("  ");
-        for x in 0..18 {
-            let top = pixels[y * 18 + x];
-            let bottom = pixels[(y + 1) * 18 + x];
+        for &pixel in row {
             print!("\x1b[0m");
-            match (top[3] > 0, bottom[3] > 0) {
-                (false, false) => print!(" "),
-                // Inverse video keeps the lower half at the shell background.
-                (true, false) => print!("{}\x1b[7m▄", colors.sgr(top, false)),
-                (false, true) => print!("{}▄", colors.sgr(bottom, false)),
-                (true, true) if top == bottom => print!("{} ", colors.sgr(bottom, true)),
-                (true, true) => print!("{}{}▄", colors.sgr(bottom, false), colors.sgr(top, true)),
+            if pixel[3] == 0 {
+                print!("  ");
+            } else {
+                print!("{}  ", colors.sgr(pixel, true));
             }
         }
         println!("\x1b[0m");
@@ -346,6 +326,8 @@ pub fn render_chats(
         });
         let preview = if invite(contact) {
             "приглашение в чат".into()
+        } else if contact["typing"] == true {
+            "печатает…".into()
         } else if nearby {
             crate::ui::nearby_label(contact)
         } else {
@@ -379,7 +361,7 @@ pub fn render_chats(
         let preview = format!("{preview:33}");
         let preview = if invite(contact) {
             palette.paint(Tone::Warning, preview)
-        } else if nearby {
+        } else if nearby || contact["typing"] == true {
             palette.paint(Tone::Accent, preview)
         } else if count == 0 {
             palette.paint(Tone::Muted, preview)

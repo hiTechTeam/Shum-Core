@@ -74,13 +74,11 @@ fn terminal_capabilities_distinguish_apple_terminal_and_warp() {
             Display::for_terminal("Apple_Terminal", "xterm-256color", colorterm, false, false);
         assert_eq!(apple.colors, Colors::Indexed);
         assert_eq!(apple.images, ProtocolType::Halfblocks);
-        assert!(apple.cell_avatars);
     }
     let warp = Display::for_terminal("WarpTerminal", "xterm-256color", "", false, false);
     assert_eq!(warp.colors, Colors::Rgb);
     assert_eq!(warp.images, ProtocolType::Iterm2);
     assert!(warp.direct_images);
-    assert!(!warp.cell_avatars);
     assert_eq!(
         Display::for_terminal("", "xterm-256color", "", false, false).colors,
         Colors::Indexed
@@ -127,7 +125,17 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
                     text.matches("Friend").count(),
                     if width >= 60 { 2 } else { 1 }
                 );
-                assert!(!text.contains(['▀', '▄']));
+                assert!(
+                    !text.contains(['▀', '▄', '█']),
+                    "avatars must not depend on font glyphs"
+                );
+                if width >= 80 {
+                    assert!(
+                        buffer.content.iter().any(|c| c.symbol() == " "
+                            && !matches!(c.bg, Color::Indexed(232 | 233) | Color::Reset)),
+                        "portraits must be visible through cell backgrounds"
+                    );
+                }
             }
         }
     }
@@ -156,92 +164,41 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
 }
 
 #[test]
-fn apple_terminal_avatars_use_compact_full_portraits_without_glyphs() {
-    let display = Display::for_terminal("Apple_Terminal", "xterm-256color", "", false, false);
+fn avatar_preview_uses_complete_background_cells_for_every_seed() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../protocol/vectors/01-avatar-pixels.json"
     ))
     .unwrap();
-    for case in fixture["cases"].as_array().unwrap() {
-        let seed = case["seed"].as_str().unwrap().parse().unwrap();
-        let mut pictures = Pictures::with_display(Picker::halfblocks(), display);
-        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
-        let wizard = Wizard {
-            step: Step::Avatar,
-            name: "Test".into(),
-            seed,
-            error: String::new(),
-            file_keys: true,
-        };
-        terminal
-            .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
-            .unwrap();
-        let reference =
-            shum_cli::avatar::render_subject(seed).compact_cells(shum_cli::avatar::kind(seed));
-        for y in 0..9 {
-            for x in 0..9 {
-                let pixel = reference[y * 9 + x];
-                let rgb: [u8; 3] = std::array::from_fn(|i| {
-                    ((u32::from(pixel[i]) * u32::from(pixel[3])
-                        + [10, 13, 11][i] * (255 - u32::from(pixel[3]))
-                        + 127)
-                        / 255) as u8
-                });
-                for dx in 0..2 {
-                    let cell = &terminal.backend().buffer()[(4 + x as u16 * 2 + dx, 10 + y as u16)];
-                    assert_eq!(
-                        cell.symbol(),
-                        " ",
-                        "a font glyph cannot create seams in the avatar"
-                    );
-                    assert_eq!(
-                        cell.bg,
-                        display.colors.color(Color::Rgb(rgb[0], rgb[1], rgb[2]))
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn avatar_preview_preserves_samples_with_backgrounds_and_lower_blocks() {
-    for seed in [0, 1, 42, 123, 9001] {
-        let mut pictures = Pictures::with_colors(Picker::halfblocks(), Colors::Rgb);
-        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
-        let wizard = Wizard {
-            step: Step::Avatar,
-            name: "Test".into(),
-            seed,
-            error: String::new(),
-            file_keys: true,
-        };
-        terminal
-            .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
-            .unwrap();
-        let pixels = shum_cli::avatar::render_subject(seed).sampled(18);
-        for y in 0..9 {
-            for x in 0..18 {
-                let cell = &terminal.backend().buffer()[(4 + x as u16, 10 + y as u16)];
-                let a = pixels[y * 2 * 18 + x];
-                let b = pixels[(y * 2 + 1) * 18 + x];
-                let rgb = |p: [u8; 4]| {
-                    let c = std::array::from_fn::<_, 3, _>(|i| {
-                        ((u32::from(p[i]) * u32::from(p[3])
-                            + [10, 13, 11][i] * (255 - u32::from(p[3]))
-                            + 127)
-                            / 255) as u8
-                    });
-                    Color::Rgb(c[0], c[1], c[2])
-                };
-                assert_ne!(cell.symbol(), "▀", "avoid the upper block's top bearing");
-                if rgb(a) == rgb(b) {
-                    assert_eq!(cell.symbol(), " ");
-                    assert_eq!(cell.bg, rgb(b));
-                } else {
-                    assert_eq!(cell.symbol(), "▄");
-                    assert_eq!(cell.fg, rgb(b));
-                    assert_eq!(cell.bg, rgb(a));
+    for colors in [Colors::Rgb, Colors::Indexed] {
+        for case in fixture["cases"].as_array().unwrap() {
+            let seed = case["seed"].as_str().unwrap().parse().unwrap();
+            let mut pictures = Pictures::with_colors(Picker::halfblocks(), colors);
+            let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+            let wizard = Wizard {
+                step: Step::Avatar,
+                name: "Test".into(),
+                seed,
+                error: String::new(),
+                file_keys: true,
+            };
+            terminal
+                .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
+                .unwrap();
+            let pixels = shum_cli::avatar::render_cells(seed);
+            for y in 0..12 {
+                for x in 0..12 {
+                    let pixel = pixels[y * 12 + x];
+                    let expected = if pixel[3] == 0 {
+                        Color::Rgb(10, 13, 11)
+                    } else {
+                        Color::Rgb(pixel[0], pixel[1], pixel[2])
+                    };
+                    for dx in 0..2 {
+                        let cell =
+                            &terminal.backend().buffer()[(4 + x as u16 * 2 + dx, 10 + y as u16)];
+                        assert_eq!(cell.symbol(), " ", "avoid all font-dependent drawing");
+                        assert_eq!(cell.bg, colors.color(expected), "seed {seed} at {x},{y}");
+                    }
                 }
             }
         }

@@ -78,6 +78,7 @@ fn nearby_screen_shows_live_radio_state_and_only_nearby_contacts() {
     let mut data = example();
     data["bluetooth"] = json!({"enabled":true,"scan":"scanning","advertise":"advertising"});
     data["contacts"][0]["nearby"] = json!(true);
+    data["contacts"][0]["typing"] = json!(false);
     data["contacts"][0]["distance"] = json!(3);
     let mut view = View::default();
     view.tab = 1;
@@ -354,5 +355,62 @@ fn save_screen(terminal: &Terminal<TestBackend>, name: &str) {
             .unwrap(),
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn chat_list_typing_is_visible_and_restores_the_preview() {
+    use shum_cli::{
+        display::Colors,
+        terminal::{render_chats, Palette},
+    };
+    let mut data = example();
+    data["contacts"].as_array_mut().unwrap().truncate(1);
+    data["contacts"][0]["nearby"] = json!(true);
+    data["messages"] = json!([{"contactID":"anna","text":"Последнее"}]);
+    let mut pictures = Pictures::new(Picker::halfblocks());
+    for ascii in [false, true] {
+        for tab in [0, 1, 3] {
+            let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+            let mut view = View::default();
+            view.tab = tab;
+            for typing in [true, false, true, false] {
+                data["contacts"][0]["typing"] = json!(typing);
+                terminal
+                    .draw(|f| draw(f, &data, &mut view, &mut pictures, ascii))
+                    .unwrap();
+                let screen = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert_eq!(screen.contains("печатает…"), typing);
+                assert!(
+                    screen.contains("Аня (1)"),
+                    "unread badge must remain while typing"
+                );
+                if !typing {
+                    assert!(screen.contains(if tab == 1 {
+                        "Рядом"
+                    } else {
+                        "Последнее"
+                    }));
+                }
+                let output = render_chats(
+                    &data,
+                    tab == 1,
+                    false,
+                    tab == 3,
+                    ascii,
+                    Palette::new(Colors::Rgb, false),
+                );
+                assert_eq!(output.contains("печатает…"), typing);
+                if !typing && tab != 1 {
+                    assert!(output.contains("Последнее"));
+                }
+            }
+        }
     }
 }
