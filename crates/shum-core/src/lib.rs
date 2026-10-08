@@ -11,7 +11,14 @@ pub mod canonical;
 pub mod card;
 pub mod crypto;
 pub mod invitation;
+pub mod noise;
+pub mod packet;
+pub mod profile;
 
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+#[cfg(feature = "uniffi")]
+pub mod bindings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
