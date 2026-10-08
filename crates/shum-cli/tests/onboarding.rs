@@ -8,6 +8,7 @@ fn confirmed_avatar_and_prepared_keys_survive_reopening_without_duplicate_profil
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("profiles");
     let settings = Settings {
+        bluetooth: false,
         relays: vec!["ws://127.0.0.1:9".into()],
         push_url: None,
     };

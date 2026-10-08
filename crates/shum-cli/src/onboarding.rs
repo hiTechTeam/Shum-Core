@@ -39,12 +39,14 @@ const SHIELD: [&str; 13] = [
 ];
 #[derive(Clone)]
 pub struct Settings {
+    pub bluetooth: bool,
     pub relays: Vec<String>,
     pub push_url: Option<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            bluetooth: true,
             relays: shum_transport_nostr::DEFAULT_RELAYS
                 .iter()
                 .map(|s| (*s).into())
@@ -102,7 +104,7 @@ pub fn create(
         let mut open = profiles.open(Some(&p.id))?;
         open.store.transaction(|s| {
             s["ownProfileCard"] = serde_json::to_value(&card)?;
-            s["cliSettings"] = json!({"relays":settings.relays,"pushURL":settings.push_url});
+            s["cliSettings"] = json!({"relays":settings.relays,"pushURL":settings.push_url,"bluetooth":settings.bluetooth});
             Ok(())
         })?;
         drop(open);
@@ -272,7 +274,7 @@ pub fn draw(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures, asc
         );
         if tall && wizard.step == Step::Avatar {
             frame.render_widget(
-                Paragraph::new("Фото рядом появится с поддержкой Bluetooth.").style(muted),
+                Paragraph::new("Фото-аватары пока недоступны.").style(muted),
                 row(21, 1),
             );
         }

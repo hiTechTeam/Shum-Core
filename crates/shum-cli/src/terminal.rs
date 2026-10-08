@@ -210,7 +210,7 @@ pub fn profile(snapshot: &Value, ascii: bool) {
         .ok()
         .map(|c| fingerprint(&c))
         .unwrap_or_default();
-    println!("  {} · текущий\n  {}\n\n  Чаты       {chats}\n  Контакты   {contacts}\n  Аватар     пиксельный (для всех)\n  Фото       требует Bluetooth\n\n  Отпечаток  {fingerprint}\n  Shum ID    {}", safe(text(&card["name"])), safe(text(&card["bio"])),text(&snapshot["profile"]["ownerId"]));
+    println!("  {} · текущий\n  {}\n\n  Чаты       {chats}\n  Контакты   {contacts}\n  Аватар     пиксельный (для всех)\n  Фото       пока недоступно\n\n  Отпечаток  {fingerprint}\n  Shum ID    {}", safe(text(&card["name"])), safe(text(&card["bio"])),text(&snapshot["profile"]["ownerId"]));
 }
 pub fn chats(snapshot: &Value, nearby: bool, invites: bool, unread: bool, ascii: bool) {
     let contacts = snapshot["contacts"]
@@ -233,6 +233,8 @@ pub fn chats(snapshot: &Value, nearby: bool, invites: bool, unread: bool, ascii:
         });
         let preview = if invite(contact) {
             "приглашение в чат".into()
+        } else if nearby {
+            crate::ui::nearby_label(contact)
         } else {
             last.map(|m| trim_width(text(&m["text"]), 33))
                 .unwrap_or_else(|| "нет сообщений".into())

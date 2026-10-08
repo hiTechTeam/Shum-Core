@@ -47,6 +47,10 @@ pub struct OpenProfile {
     root: PathBuf,
 }
 impl OpenProfile {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn check_name(&self, name: &str) -> Result<()> {
         let profiles = Profiles::new(&self.root)?;
         let _lock = profiles.lock()?;

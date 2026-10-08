@@ -97,10 +97,10 @@ class Terminal:
         os.close(self.master);os.close(self.slave)
 try:
     # First launch offers registration automatically. Cancellation publishes nothing.
-    t=Terminal('--relay','ws://127.0.0.1:9','--push-url','off')
+    t=Terminal('--no-bluetooth','--relay','ws://127.0.0.1:9','--push-url','off')
     t.expect('Как вас зовут?');t.exit('\x1b')
     assert not cli('profile','list')['profiles']; print('PASS first-run cancellation')
-    args=['--relay','ws://127.0.0.1:9','--push-url','off']
+    args=['--no-bluetooth','--relay','ws://127.0.0.1:9','--push-url','off']
     if not NATIVE: args += ['init','--headless']
     t=Terminal(*args);t.expect('Как вас зовут?');t.send('\r');t.expect('Имя: 1–64')
     t.send('Проверка\r');t.expect('другой вариант');t.send('r');t.send('к');t.send('\r');t.expect('Профиль готов',20);t.send('\r')

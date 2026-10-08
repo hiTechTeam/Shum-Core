@@ -38,6 +38,12 @@ struct Args {
     #[arg(long, global = true)]
     /// Адрес push API или off
     push_url: Option<String>,
+    #[arg(long, global = true, conflicts_with = "no_bluetooth")]
+    /// Включить Bluetooth для выбранного профиля
+    bluetooth: bool,
+    #[arg(long, global = true)]
+    /// Работать только через интернет
+    no_bluetooth: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -115,7 +121,7 @@ enum Commands {
     Status,
     /// Версия, профиль и каталог данных
     About,
-    /// Состояние Bluetooth (адаптер пока не реализован)
+    /// Устройства рядом и состояние Bluetooth
     Nearby,
     /// Фоновая служба: автозапуск или остановка
     Daemon {
@@ -212,6 +218,9 @@ async fn run(args: Args) -> Result<()> {
     let root = root(&args)?;
     let profiles = Profiles::new(&root)?;
     let settings = onboarding::Settings {
+        bluetooth: args.bluetooth
+            || (!args.no_bluetooth
+                && !matches!(&args.command, Some(Commands::Init { headless: true, .. }))),
         relays: if args.relay.is_empty() {
             onboarding::Settings::default().relays
         } else {
@@ -364,7 +373,7 @@ async fn run(args: Args) -> Result<()> {
             "Автозапуск службы установлен",
         );
     }
-    if !args.relay.is_empty() || args.push_url.is_some() {
+    if !args.relay.is_empty() || args.push_url.is_some() || args.bluetooth || args.no_bluetooth {
         if !args.relay.is_empty() {
             shum_transport_nostr::RelayPool::validate_urls(&args.relay)?;
         }
@@ -376,6 +385,9 @@ async fn run(args: Args) -> Result<()> {
         open.store.transaction(|s| {
             if !s["cliSettings"].is_object() {
                 s["cliSettings"] = json!({});
+            }
+            if args.bluetooth || args.no_bluetooth {
+                s["cliSettings"]["bluetooth"] = json!(args.bluetooth);
             }
             if !args.relay.is_empty() {
                 s["cliSettings"]["relays"] = json!(args.relay);
@@ -488,7 +500,7 @@ async fn run(args: Args) -> Result<()> {
                 }),
         }) => {
             if photo.is_some() {
-                bail!("Передача фото требует Bluetooth, адаптер пока не подключён");
+                bail!("Фото-аватары пока недоступны. iPhone 1.0 не принимает пакеты фото.");
             }
             let seed = if *random {
                 Some(u64::from_le_bytes(runtime::random()?))
@@ -503,13 +515,6 @@ async fn run(args: Args) -> Result<()> {
                 bio: None,
                 seed,
             }
-        }
-        Some(Commands::Nearby) => {
-            return output(
-                json!({"available":false,"reason":"Bluetooth adapter is not implemented","peers":[]}),
-                args.json,
-                "Bluetooth пока не подключён. Интернет-доставка доступна.",
-            )
         }
         _ => Request::Snapshot,
     };
@@ -599,8 +604,40 @@ async fn run(args: Args) -> Result<()> {
                 Ok(())
             }
         }
+        Some(Commands::Nearby) => {
+            let peers = value["contacts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["nearby"] == true)
+                .cloned()
+                .collect::<Vec<_>>();
+            if args.json {
+                output(
+                    json!({"bluetooth":value["bluetooth"],"peers":peers}),
+                    true,
+                    "",
+                )
+            } else {
+                println!("{}", ui::bluetooth_status(&value));
+                terminal::chats(&value, true, false, false, args.ascii);
+                Ok(())
+            }
+        }
         Some(Commands::Status) | Some(Commands::About) | Some(Commands::Daemon { .. }) => {
-            let description=format!("Shum {} · протокол v1\nПрофиль: {}\nРелеи: {}\nBluetooth: адаптер ещё не подключён\nPush API: {}\nДанные: {}",env!("CARGO_PKG_VERSION"),terminal::safe(terminal::text(&value["card"]["name"])),value["relays"].as_array().map_or(0,Vec::len),if value["pushConfigured"]==true{"настроен"}else{"не настроен"},root.display());
+            let description = format!(
+                "Shum {} · протокол v1\nПрофиль: {}\nРелеи: {}\n{}\nPush API: {}\nДанные: {}",
+                env!("CARGO_PKG_VERSION"),
+                terminal::safe(terminal::text(&value["card"]["name"])),
+                value["relays"].as_array().map_or(0, Vec::len),
+                ui::bluetooth_status(&value),
+                if value["pushConfigured"] == true {
+                    "настроен"
+                } else {
+                    "не настроен"
+                },
+                root.display()
+            );
             output(value, args.json, &description)
         }
         _ => output(value, args.json, "Сохранено"),

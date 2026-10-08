@@ -145,7 +145,17 @@ struct Lookup {
     expires: i64,
     reply: Reply,
 }
+struct NearbyPeer {
+    peer: shum_core::queue::Peer,
+    noise: [u8; 32],
+    distance: Option<u32>,
+    direct: bool,
+}
 pub struct Runtime {
+    ble: Option<shum_transport_ble::Ble>,
+    ble_updates: mpsc::Receiver<shum_transport_ble::Update>,
+    nearby: HashMap<String, NearbyPeer>,
+    bluetooth: Value,
     pub profile: OpenProfile,
     pub engine: Engine,
     pool: RelayPool,
@@ -175,6 +185,10 @@ impl Runtime {
         }
         let (pool, updates) = RelayPool::start(relays, &engine.inbox.own.nostr_key)?;
         Ok(Self {
+            ble: None,
+            ble_updates: mpsc::channel(1).1,
+            nearby: HashMap::new(),
+            bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             profile,
             engine,
             pool,
@@ -193,7 +207,12 @@ impl Runtime {
     fn routes(&self) -> Routes {
         Routes {
             internet: !self.pool.connected().is_empty(),
-            peers: vec![],
+            peers: self
+                .nearby
+                .values()
+                .filter(|p| !self.engine.inbox.blocked.contains(&p.peer.card.id()))
+                .map(|p| p.peer.clone())
+                .collect(),
         }
     }
     fn apply(
@@ -270,7 +289,13 @@ impl Runtime {
                         });
                     }
                 }
-                Action::SendBle { .. } => {}
+                Action::SendBle { peer, packet } => {
+                    if let Some(ble) = &self.ble {
+                        if let Err(error) = ble.send(peer, packet) {
+                            self.bluetooth["error"] = json!(error.to_string());
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -282,6 +307,12 @@ impl Runtime {
             .contacts
             .iter()
             .chain(self.engine.inbox.requests.iter())
+            .map(|(id, card)| (id.clone(), card))
+            .chain(
+                self.nearby
+                    .values()
+                    .map(|p| (p.peer.card.id(), &p.peer.card)),
+            )
             .collect();
         let matches: Vec<_> = cards
             .into_iter()
@@ -292,7 +323,7 @@ impl Runtime {
             })
             .collect();
         match matches.as_slice() {
-            [(id, _)] => Ok((*id).clone()),
+            [(id, _)] => Ok(id.clone()),
             [] => bail!("Контакт не найден: {selector}"),
             _ => bail!("Несколько контактов с этим именем. Укажите Shum ID."),
         }
@@ -305,9 +336,15 @@ impl Runtime {
             .contacts
             .iter()
             .chain(self.engine.inbox.requests.iter())
+            .map(|(id, card)| (id.clone(), card))
+            .chain(
+                self.nearby
+                    .values()
+                    .map(|p| (p.peer.card.id(), &p.peer.card)),
+            )
             .collect();
-        cards.retain(|id, _| !self.engine.inbox.blocked.contains(*id));
-        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":false,"typing":self.engine.inbox.typing.get(id).is_some_and(|s|s.active(now())),"online":self.engine.inbox.presence.get(id).is_some_and(|s|s.active(now()))})).collect();
+        cards.retain(|id, _| !self.engine.inbox.blocked.contains(id));
+        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
         contacts.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
@@ -326,7 +363,7 @@ impl Runtime {
             messages.drain(..messages.len() - 2000);
         }
         let reactions:Vec<_>=self.engine.inbox.reactions.iter().map(|((message,person),mark)|json!({"messageID":message,"personID":person,"mark":mark})).collect();
-        json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"messages":messages,"reactions":reactions,"relays":self.pool.connected(),"bluetooth":"not_implemented","pushConfigured":self.push.is_some(),"pushError":self.push_error,"error":self.last_error,"version":env!("CARGO_PKG_VERSION")})
+        json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"messages":messages,"reactions":reactions,"relays":self.pool.connected(),"bluetooth":self.bluetooth,"pushConfigured":self.push.is_some(),"pushError":self.push_error,"error":self.last_error,"version":env!("CARGO_PKG_VERSION")})
     }
     fn command(&mut self, request: Request) -> Result<Value> {
         match request {
@@ -586,6 +623,106 @@ impl Runtime {
         })?;
         Ok(())
     }
+    fn configure_bluetooth(&mut self) -> Result<()> {
+        let configured = self.profile.store.state()["cliSettings"]["bluetooth"]
+            .as_bool()
+            .unwrap_or(true);
+        let selected = shum_store::profiles::Profiles::new(self.profile.root())?
+            .list()?
+            .0;
+        let enabled = configured && selected.as_deref() == Some(self.profile.profile.id.as_str());
+        self.bluetooth["enabled"] = json!(enabled);
+        if !enabled {
+            self.ble.take();
+            self.nearby.clear();
+            self.bluetooth["scan"] = json!(if configured {
+                "other_profile"
+            } else {
+                "disabled"
+            });
+            self.bluetooth["advertise"] = self.bluetooth["scan"].clone();
+            return Ok(());
+        }
+        let pins = self
+            .engine
+            .inbox
+            .contacts
+            .values()
+            .chain(self.engine.inbox.blocked_cards.values())
+            .cloned()
+            .collect();
+        if let Some(ble) = &self.ble {
+            ble.profile(
+                self.engine.inbox.own.clone(),
+                pins,
+                self.engine.inbox.blocked.clone(),
+            )?;
+        } else {
+            self.bluetooth = json!({"enabled":true,"scan":"starting","advertise":"starting"});
+            let (ble, updates) = shum_transport_ble::Ble::start(
+                &self.profile.root().join(&self.profile.profile.id),
+                self.engine.inbox.own.clone(),
+                Secret32::new(*self.profile.keys.noise.expose()),
+                Secret32::new(*self.profile.keys.signing.expose()),
+                pins,
+                self.engine.inbox.blocked.clone(),
+            )?;
+            self.ble = Some(ble);
+            self.ble_updates = updates;
+        }
+        Ok(())
+    }
+    fn ble_update(&mut self, update: shum_transport_ble::Update) -> Result<()> {
+        use shum_transport_ble::Update;
+        match update {
+            Update::State { role, state } => self.bluetooth[role] = json!(state),
+            Update::Gone(id) => {
+                self.nearby.remove(&id);
+            }
+            Update::Peer {
+                routing,
+                card,
+                noise,
+                distance,
+                direct,
+            } => {
+                if !self.engine.inbox.blocked.contains(&card.id()) {
+                    let peer =
+                        shum_core::queue::Peer::authenticated(routing.clone(), *card, &noise)?;
+                    self.nearby.insert(
+                        routing,
+                        NearbyPeer {
+                            peer,
+                            noise,
+                            distance,
+                            direct,
+                        },
+                    );
+                }
+            }
+            Update::Packet {
+                routing,
+                noise,
+                packet,
+            } => {
+                if self.nearby.get(&routing).is_some_and(|p| p.noise == noise)
+                    || packet.card.is_some()
+                {
+                    self.apply(|e, c| {
+                        e.receive(
+                            *packet,
+                            Source::Ble {
+                                peer: &routing,
+                                session_noise: &noise,
+                            },
+                            c,
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub async fn run(mut self, mut commands: mpsc::Receiver<Command>) -> Result<()> {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         while !self.stopped {
@@ -594,7 +731,7 @@ impl Runtime {
                     let Some(Command {request,reply})=next else {break;};
                     if let Request::Add {link}=&request {if let Ok(Invitation::Locator(key))=invitation::parse(link){if let Err(error)=self.start_lookup(key,reply){self.last_error=Some(error.to_string());}continue;}}
                     let result=match &request {
-                        Request::Invite {contact}|Request::Accept {contact}|Request::Decline {contact}=> {let action=match &request{Request::Invite {..}=>InvitationAction::Request,Request::Accept {..}=>InvitationAction::Accept,_=>InvitationAction::Decline};self.contact(contact).and_then(|id|self.apply(|e,c|e.invitation(&id,action,None,c))).map(|_|json!({"status":"ok"}))},
+                        Request::Invite {contact}|Request::Accept {contact}|Request::Decline {contact}=> {let action=match &request{Request::Invite {..}=>InvitationAction::Request,Request::Accept {..}=>InvitationAction::Accept,_=>InvitationAction::Decline};self.contact(contact).and_then(|id|{let nearby=self.nearby.values().find(|p|p.peer.card.id()==id).map(|p|p.peer.card.clone());self.apply(|e,c|{if !e.inbox.contacts.contains_key(&id) && !e.inbox.requests.contains_key(&id){if let Some(card)=nearby{e.add_contact(card)?;}}e.invitation(&id,action,None,c)})}).map(|_|json!({"status":"ok"}))},
                         _=>self.command(request),
                     };
                     let _=reply.send(result.map_err(|e|e.to_string()));
@@ -605,13 +742,16 @@ impl Runtime {
                     Some(Ok(Job::Pushed(error)))=>self.push_error=error,
                     _=>{},
                 }}
+                update=self.ble_updates.recv(),if self.ble.is_some()=>{if let Some(update)=update{if let Err(error)=self.ble_update(update){self.bluetooth["error"]=json!(error.to_string());}}else{self.ble.take();self.nearby.clear();self.bluetooth["error"]=json!("Bluetooth worker stopped");}}
                 _=tick.tick()=>{
+                    if let Err(error)=self.configure_bluetooth(){self.bluetooth["error"]=json!(error.to_string());}
                     if let Err(error)=self.apply(|e,c|Ok(e.tick(c.routes,c.now))){self.last_error=Some(error.to_string());}
                     let expired:Vec<_>=self.lookups.iter().filter(|(_,l)|l.expires<=now()).map(|(id,_)|id.clone()).collect();for id in expired {if let Some(lookup)=self.lookups.remove(&id){let _=lookup.reply.send(Err("Контакт не ответил за 20 секунд".into()));}}
                 }
                 _=shutdown_signal()=>break,
             }
         }
+        self.ble.take();
         self.engine.retire();
         self.jobs.abort_all();
         self.profile.store.checkpoint().context("checkpoint")?;

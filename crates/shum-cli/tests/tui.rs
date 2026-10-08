@@ -6,6 +6,44 @@ fn example() -> Value {
     json!({"profile":{"id":"local"},"card":{"name":"Игорь Загоев"},"relays":["wss://test.invalid"],"contacts":[{"id":"anna","card":{"name":"Аня","bio":"Дизайнер, люблю кофе и настолки.","avatarSeed":42},"unread":1,"nearby":false,"phase":"accepted","typing":true},{"id":"igor","card":{"name":"Игорь","avatarSeed":123},"phase":"incomingPending","unread":0}],"messages":[{"id":"m1","contactID":"anna","outgoing":false,"text":"Привет! Ты была на фестивале?","timestamp":1800000000000_i64,"status":"read"},{"id":"m2","contactID":"anna","outgoing":true,"text":"Да, у сцены с синтезаторами","timestamp":1800000100000_i64,"status":"read"}],"reactions":[{"messageID":"m2","mark":{"reaction":"like"}}]})
 }
 #[test]
+fn nearby_screen_shows_live_radio_state_and_only_nearby_contacts() {
+    let mut data = example();
+    data["bluetooth"] = json!({"enabled":true,"scan":"scanning","advertise":"advertising"});
+    data["contacts"][0]["nearby"] = json!(true);
+    data["contacts"][0]["distance"] = json!(3);
+    let mut view = View::default();
+    view.tab = 1;
+    let mut pictures = Pictures::new(Picker::halfblocks());
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+    terminal
+        .draw(|f| draw(f, &data, &mut view, &mut pictures, false))
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(screen.contains("Рядом · ~3 м"));
+    assert!(screen.contains("ваш профиль виден рядом"));
+    data["contacts"] = json!([]);
+    data["bluetooth"]["advertise"] = json!("poweredOff");
+    terminal
+        .draw(|f| draw(f, &data, &mut view, &mut pictures, false))
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(screen.contains("Пока никого рядом"));
+    assert!(screen.contains("Bluetooth выключен"));
+    assert!(!screen.contains("ваш профиль виден рядом"));
+}
+#[test]
 fn tui_renders_chats_avatars_and_empty_state_in_small_terminals() {
     let mut pictures = Pictures::new(Picker::halfblocks());
     for (width, height) in [(80, 32), (40, 16), (140, 45)] {

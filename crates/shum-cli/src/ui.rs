@@ -290,7 +290,7 @@ pub fn draw(
     view.chat_rows.clear();
     let listed = contacts(snapshot, view.tab);
     view.selected = view.selected.min(listed.len().saturating_sub(1));
-    let full_empty = all.is_empty() && view.opened.is_none();
+    let full_empty = listed.is_empty() && view.opened.is_none();
     let columns = Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(64)])
         .split(vertical[2]);
     let chat_area = if full_empty || area.width < 60 {
@@ -304,7 +304,14 @@ pub fn draw(
         } else {
             columns[0]
         };
-        let block = border("Чаты", ascii);
+        let block = border(
+            if view.tab == 1 {
+                "Рядом"
+            } else {
+                "Чаты"
+            },
+            ascii,
+        );
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
         let row_height = if ascii { 2 } else { 3 };
@@ -348,6 +355,8 @@ pub fn draw(
                 .find(|m| m["contactID"] == c["id"]);
             let preview = if c["phase"] == "incomingPending" {
                 "Приглашение: Enter".into()
+            } else if view.tab == 1 {
+                nearby_label(c)
             } else {
                 last.map(|m| safe(text(&m["text"]))).unwrap_or_default()
             };
@@ -392,13 +401,17 @@ pub fn draw(
         let mut lines = lines;
         lines.extend([
             Line::from(""),
-            Line::from(if full_empty {
+            Line::from(if full_empty && view.tab == 1 {
+                "Пока никого рядом"
+            } else if full_empty {
                 "Пока нет чатов"
             } else {
                 "Выберите чат слева"
             }),
             Line::from(Span::styled(
-                if full_empty {
+                if full_empty && view.tab == 1 {
+                    "Откройте Shum на устройстве рядом"
+                } else if full_empty {
                     "Позовите кого-нибудь, и переписка появится здесь"
                 } else {
                     "Enter открыть · ↑↓ выбрать"
@@ -408,7 +421,7 @@ pub fn draw(
             Line::from(""),
             Line::from("i     показать мой QR-код"),
             Line::from("a     добавить по ссылке или QR"),
-            Line::from("^p    выбрать или создать профиль"),
+            Line::from("^n    кто рядом по Bluetooth"),
             Line::from(""),
             Line::from(Span::styled(
                 "или в терминале: shum invite · shum add <ссылка>",
@@ -460,7 +473,14 @@ pub fn draw(
             frame.render_widget(
                 Paragraph::new(vec![
                     Line::from(Span::styled(title.clone(), style)),
-                    Line::from(Span::styled(phase, Style::default().fg(muted))),
+                    Line::from(Span::styled(
+                        if card["nearby"] == true {
+                            format!("{} · {phase}", nearby_label(card))
+                        } else {
+                            phase.into()
+                        },
+                        Style::default().fg(muted),
+                    )),
                     Line::from(safe(text(&card["card"]["bio"]))),
                 ])
                 .wrap(Wrap { trim: false }),
@@ -590,7 +610,10 @@ pub fn draw(
             ));
         }
     }
-    let status = if view.status.is_empty() {
+    let nearby_status = bluetooth_status(snapshot);
+    let status = if view.status.is_empty() && view.tab == 1 {
+        &nearby_status
+    } else if view.status.is_empty() {
         text(&snapshot["error"])
     } else {
         &view.status
@@ -1032,7 +1055,7 @@ fn parse_command(input: &str, current: Option<&str>, snapshot: &Value) -> Result
         ["/chats","--nearby"]|["/nearby"]=>return Ok(Action::Tab(1)),
         ["/chats","--invites"]=>return Ok(Action::Tab(2)),
         ["/chats","--unread"]=>return Ok(Action::Tab(3)),
-        ["/status"|"/about"]=>return Ok(Action::Info("Shum".into(),format!("Версия {} · протокол v1\nПрофиль: {}\nРелеев подключено: {}\nBluetooth: пока не реализован\n{}",env!("CARGO_PKG_VERSION"),safe(text(&snapshot["card"]["name"])),snapshot["relays"].as_array().map_or(0,Vec::len),safe(text(&snapshot["error"]))))),
+        ["/status"|"/about"]=>return Ok(Action::Info("Shum".into(),format!("Версия {} · протокол v1\nПрофиль: {}\nРелеев подключено: {}\n{}\n{}",env!("CARGO_PKG_VERSION"),safe(text(&snapshot["card"]["name"])),snapshot["relays"].as_array().map_or(0,Vec::len),bluetooth_status(snapshot),safe(text(&snapshot["error"]))))),
         ["/keys","verify",who]=>{let c:shum_core::card::Card=serde_json::from_value(find_contact(snapshot,who)?["card"].clone())?;return Ok(Action::Info("Сверка ключей".into(),format!("{}\n\nОтпечаток как в iPhone: {}\n\nShum ID: {}",safe(&c.name),crate::terminal::fingerprint(&c),c.id())));},
         _=>bail!("Команда или аргументы не распознаны. /help: список и примеры"),
     };
@@ -1336,8 +1359,8 @@ async fn run_loop(
                 view.command_mode = false;
                 view.input.clear();
                 if tab == 1 {
-                    view.status =
-                        "Bluetooth пока не реализован; доступна переписка через релей".into();
+                    view.opened = None;
+                    view.status.clear();
                 }
             }
             Action::Profiles => {
@@ -1487,4 +1510,62 @@ pub async fn profile_preview(root: &Path, id: &str) -> Option<Value> {
         let state=open.store.state();
         Some(serde_json::json!({"card":state["ownProfileCard"],"chatCount":state["contacts"].as_array().map_or(0,Vec::len)}))
     }).await.ok()?
+}
+
+pub fn bluetooth_status(snapshot: &Value) -> String {
+    let value = &snapshot["bluetooth"];
+    let scan = text(&value["scan"]);
+    let advertise = text(&value["advertise"]);
+    if value.is_string() {
+        return "Перезапустите службу: shum daemon --stop".into();
+    }
+    if scan == "other_profile" {
+        return "Рядом показывается другой выбранный профиль".into();
+    }
+    if scan == "disabled" || value["enabled"] == false {
+        return "Bluetooth отключён · включить: shum --bluetooth status".into();
+    }
+    if scan == "starting" && advertise == "starting" || scan.is_empty() && advertise.is_empty() {
+        return "Bluetooth: запускается поиск устройств рядом…".into();
+    }
+    if [scan, advertise]
+        .iter()
+        .any(|s| s.contains("unauthorized") || s.contains("permission") || s.contains("Permission"))
+    {
+        return match std::env::consts::OS {
+            "macos" => "Нужен доступ: Настройки macOS → Конфиденциальность → Bluetooth",
+            "linux" => "Нет доступа к Bluetooth: проверьте BlueZ и правила D-Bus/Polkit",
+            _ => "Нет доступа к Bluetooth: проверьте разрешения в настройках системы",
+        }
+        .into();
+    }
+    if scan == "poweredOff" || advertise == "poweredOff" {
+        return "Bluetooth выключен на компьютере".into();
+    }
+    if scan.contains("adapter not found") || advertise == "unsupported" {
+        return "Bluetooth-адаптер не найден · доступна переписка через релей".into();
+    }
+    if scan == "scanning" && advertise == "advertising" {
+        return "Bluetooth: поиск включён, ваш профиль виден рядом".into();
+    }
+    format!(
+        "Bluetooth · поиск: {} · объявление: {}",
+        if scan.is_empty() {
+            "запуск"
+        } else {
+            scan
+        },
+        if advertise.is_empty() {
+            "запуск"
+        } else {
+            advertise
+        }
+    )
+}
+
+pub fn nearby_label(contact: &Value) -> String {
+    match contact["distance"].as_u64() {
+        Some(meters) => format!("Рядом · ~{meters} м"),
+        None => "Рядом · Bluetooth".into(),
+    }
 }
