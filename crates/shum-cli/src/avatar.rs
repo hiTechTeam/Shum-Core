@@ -70,6 +70,14 @@ impl Avatar {
     }
 }
 pub fn render(seed: u64) -> Avatar {
+    render_impl(seed, true)
+}
+/// Client presentation: the v1 subject without its decorative square.
+/// `render` remains the exact, opaque Swift vector renderer.
+pub fn render_subject(seed: u64) -> Avatar {
+    render_impl(seed, false)
+}
+fn render_impl(seed: u64, backdrop: bool) -> Avatar {
     let mut random = Random(seed);
     let kind = kind(seed);
     let mut canvas = Avatar {
@@ -186,21 +194,23 @@ pub fn render(seed: u64) -> Avatar {
     let creature = alien_colors[random.pick(alien_colors.len())];
     let metal = metal_colors[random.pick(metal_colors.len())];
 
-    block!(0, 0, 18, 18, background);
+    if backdrop {
+        block!(0, 0, 18, 18, background);
+    }
     let decor = backdrop_detail.alpha(0.38);
-    if backdrop_pattern & 1 != 0 {
+    if backdrop && backdrop_pattern & 1 != 0 {
         block!(2, 3, 2, 2, decor);
         block!(14, 12, 2, 2, decor);
     }
-    if backdrop_pattern & 2 != 0 {
+    if backdrop && backdrop_pattern & 2 != 0 {
         block!(14, 3, 2, 2, decor);
         block!(2, 12, 2, 2, decor);
     }
-    if backdrop_pattern & 4 != 0 {
+    if backdrop && backdrop_pattern & 4 != 0 {
         block!(1, 8, 2, 2, decor);
         block!(15, 8, 2, 2, decor);
     }
-    if backdrop_pattern & 8 != 0 {
+    if backdrop && backdrop_pattern & 8 != 0 {
         block!(4, 1, 2, 1, decor);
         block!(12, 1, 2, 1, decor);
     }

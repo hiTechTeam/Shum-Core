@@ -1,6 +1,654 @@
 #![forbid(unsafe_code)]
-
-fn main() -> std::process::ExitCode {
-    eprintln!("Shum: создан каркас workspace; команды и TUI ещё не реализованы.");
-    std::process::ExitCode::from(2)
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+use serde_json::{json, Value};
+use shum_cli::{
+    ipc,
+    runtime::{self, Request},
+    terminal, ui,
+};
+use shum_core::{card::Card, crypto, packet::ReactionKind};
+use shum_store::{profiles::Profiles, vault::KeyMode};
+use std::{
+    io::{self, IsTerminal, Write},
+    path::PathBuf,
+};
+#[derive(Parser)]
+#[command(
+    name = "shum",
+    version,
+    about = "Мессенджер без номера телефона",
+    after_help = "Без команды открывается TUI. Первый запуск: shum init."
+)]
+struct Args {
+    #[arg(short = 'p', long, global = true)]
+    /// Имя или ID локального профиля
+    profile: Option<String>,
+    #[arg(long, global = true)]
+    /// Вывод JSON для скриптов
+    json: bool,
+    #[arg(long, global = true)]
+    /// Без цвета и аватаров
+    ascii: bool,
+    #[arg(long, global = true, env = "SHUM_DATA_DIR")]
+    data_dir: Option<PathBuf>,
+    #[arg(long, global = true)]
+    /// Адрес релея; можно повторить для нескольких
+    relay: Vec<String>,
+    #[arg(long, global = true)]
+    /// Адрес push API или off
+    push_url: Option<String>,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+#[derive(Subcommand)]
+enum Commands {
+    #[command(about = "Создать профиль и ключи")]
+    Init {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        headless: bool,
+    },
+    #[command(about = "Профиль, имя и аватар")]
+    Profile {
+        #[command(subcommand)]
+        command: Option<ProfileCommand>,
+    },
+    #[command(about = "Мой QR или приглашение контакту")]
+    Invite { contact: Option<String> },
+    #[command(about = "Добавить контакт по ссылке или QR")]
+    Add {
+        link: Option<String>,
+        #[arg(long)]
+        image: Option<PathBuf>,
+    },
+    /// Список контактов и их Shum ID
+    Contacts,
+    /// Принять приглашение в чат
+    Accept { contact: String },
+    /// Отклонить приглашение
+    Decline { contact: String },
+    /// Чаты и фильтры
+    Chats {
+        #[arg(long)]
+        nearby: bool,
+        #[arg(long)]
+        invites: bool,
+        #[arg(long)]
+        unread: bool,
+    },
+    /// Открыть чат; вне терминала ждать новые сообщения
+    Open { contact: String },
+    /// Терминальный интерфейс, при желании сразу в чате
+    Ui { contact: Option<String> },
+    /// Отправить сообщение принятому контакту
+    Send { contact: String, text: String },
+    /// Отметить чат прочитанным
+    Read { contact: String },
+    /// Поставить или снять реакцию на сообщение
+    React { message: String, reaction: String },
+    /// Очистить чат на этом компьютере
+    Clear {
+        contact: String,
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Отменить отправку сообщения
+    Cancel { message: String },
+    /// Заблокировать контакт; --undo разблокировать
+    Block {
+        contact: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Сверить отпечатки ключей
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+    /// Остановить и заблокировать сеанс профиля
+    Lock,
+    /// Снять блокировку сеанса
+    Unlock,
+    /// Подключения и состояние службы
+    Status,
+    /// Версия, профиль и каталог данных
+    About,
+    /// Состояние Bluetooth (адаптер пока не реализован)
+    Nearby,
+    /// Фоновая служба: автозапуск или остановка
+    Daemon {
+        #[arg(long, hide = true, conflicts_with_all = ["install", "stop"])]
+        run: bool,
+        #[arg(long, conflicts_with = "stop")]
+        install: bool,
+        #[arg(long)]
+        stop: bool,
+    },
+}
+#[derive(Subcommand)]
+enum ProfileCommand {
+    List,
+    Use {
+        name: String,
+    },
+    Delete {
+        name: Option<String>,
+        #[arg(long)]
+        confirm: Option<String>,
+    },
+    Name {
+        name: String,
+    },
+    Bio {
+        text: String,
+    },
+    Avatar {
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        random: bool,
+        #[arg(long)]
+        photo: Option<PathBuf>,
+    },
+}
+#[derive(Subcommand)]
+enum KeysCommand {
+    Verify {
+        contact: String,
+        #[arg(long)]
+        qr: bool,
+    },
+}
+fn output(value: Value, json_mode: bool, plain: &str) -> Result<()> {
+    if json_mode {
+        println!("{}", serde_json::to_string(&value)?);
+    } else {
+        println!("{plain}");
+    }
+    Ok(())
+}
+fn root(args: &Args) -> Result<PathBuf> {
+    if let Some(path) = &args.data_dir {
+        return Ok(std::path::absolute(path)?);
+    }
+    Ok(directories::ProjectDirs::from("org", "Shum", "Shum")
+        .context("Укажите --data-dir")?
+        .data_local_dir()
+        .to_owned())
+}
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    let json_mode = std::env::args().any(|a| a == "--json");
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            let help = matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            );
+            if json_mode {
+                println!("{}", json!({"message":error.to_string(),"success":help}));
+            } else {
+                let _ = error.print();
+            }
+            return std::process::ExitCode::from(if help { 0 } else { 2 });
+        }
+    };
+    match run(args).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            if json_mode {
+                println!("{}", json!({"error":error.to_string()}));
+            } else {
+                eprintln!("Shum: {error}");
+            }
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+async fn run(args: Args) -> Result<()> {
+    let root = root(&args)?;
+    let profiles = Profiles::new(&root)?;
+    if let Some(Commands::Init { name, headless }) = &args.command {
+        let name = match name.clone().or_else(|| args.profile.clone()) {
+            Some(name) => name,
+            None if io::stdin().is_terminal() => terminal::prompt("Как вас зовут? ")?,
+            None => bail!("Укажите shum init --name <имя>"),
+        };
+        if name.is_empty()
+            || name.len() > 64
+            || name.trim() != name
+            || name.chars().any(char::is_control)
+        {
+            bail!("Имя: от 1 до 64 байт UTF-8, без пробелов по краям и управляющих символов");
+        }
+        if !args.relay.is_empty() {
+            shum_transport_nostr::RelayPool::validate_urls(&args.relay)?;
+        }
+        if let Some(url) = args.push_url.as_deref().filter(|url| *url != "off") {
+            shum_transport_nostr::push::PushClient::new(url)?;
+        }
+        let p = profiles.create(
+            &name,
+            if *headless {
+                KeyMode::File
+            } else {
+                KeyMode::Auto
+            },
+        )?;
+        let mut open = profiles.open(Some(&p.id))?;
+        let card = Card::create(
+            &open.keys.noise,
+            &open.keys.signing,
+            &open.keys.nostr,
+            name.clone(),
+            "",
+            None,
+            1,
+        )?;
+        let relays = if args.relay.is_empty() {
+            shum_transport_nostr::DEFAULT_RELAYS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        } else {
+            args.relay.clone()
+        };
+        open.store.transaction(|s| {
+            s["ownProfileCard"] = serde_json::to_value(&card)?;
+            s["cliSettings"] = json!({"relays":relays,"pushURL":args.push_url.as_deref().filter(|value|*value!="off").or_else(||if args.push_url.as_deref()==Some("off"){None}else{Some("https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net")})});
+            Ok(())
+        })?;
+        drop(open);
+        profiles.select(&p.id)?;
+        if !args.json {
+            terminal::avatar(card.avatar_seed.unwrap_or(0), args.ascii);
+        }
+        return output(json!({"profile":p,"card":card,"invitation":card.invitation()?}),args.json,&format!("Профиль {} создан.\nShum ID: {}\n\nshum invite    мой QR\nshum add <ссылка>\nshum           открыть интерфейс",terminal::safe(&name),card.id()));
+    }
+    if let Some(Commands::Profile {
+        command: Some(ProfileCommand::List),
+    }) = &args.command
+    {
+        let (selected, list) = profiles.list()?;
+        if args.json {
+            return output(json!({"selected":selected,"profiles":list}), true, "");
+        }
+        for p in list {
+            println!(
+                "{} {}",
+                if selected.as_deref() == Some(&p.id) {
+                    ">"
+                } else {
+                    " "
+                },
+                terminal::safe(&p.name)
+            );
+        }
+        return Ok(());
+    }
+    if let Some(Commands::Profile {
+        command: Some(ProfileCommand::Use { name }),
+    }) = &args.command
+    {
+        profiles.select(name)?;
+        return output(
+            json!({"selected":name}),
+            args.json,
+            &format!("Выбран профиль {}", terminal::safe(name)),
+        );
+    }
+    let profile = ipc::select(&profiles, args.profile.as_deref())?;
+    if let Some(Commands::Daemon { run: true, .. }) = &args.command {
+        return ipc::serve(&root, &profile.id).await;
+    }
+    if let Some(Commands::Profile {
+        command: Some(ProfileCommand::Delete { name, confirm }),
+    }) = &args.command
+    {
+        let profile = ipc::select(&profiles, name.as_deref().or(args.profile.as_deref()))?;
+        let typed = match confirm {
+            Some(name) => name.clone(),
+            None if io::stdin().is_terminal() && !args.json => terminal::prompt(&format!(
+                "Удалить профиль и историю? Введите имя {}: ",
+                terminal::safe(&profile.name)
+            ))?,
+            _ => bail!("Для удаления укажите --confirm {:?}", profile.name),
+        };
+        if typed != profile.name {
+            bail!("Имя не совпало, удаление отменено");
+        }
+        ipc::stop(&root, &profile.id).await?;
+        profiles.delete(&profile.id)?;
+        return output(json!({"deleted":profile.id}), args.json, "Профиль удалён");
+    }
+    if matches!(args.command, Some(Commands::Lock)) {
+        ipc::stop(&root, &profile.id).await?;
+        let mut file = tempfile::NamedTempFile::new_in(root.join(&profile.id))?;
+        file.write_all(b"locked\n")?;
+        file.persist(root.join(&profile.id).join("locked"))?;
+        return output(
+            json!({"locked":true}),
+            args.json,
+            "Профиль заблокирован. Для продолжения: shum unlock",
+        );
+    }
+    if matches!(args.command, Some(Commands::Unlock)) {
+        let open = profiles.open(Some(&profile.id))?;
+        drop(open);
+        let path = root.join(&profile.id).join("locked");
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        ipc::ensure(&root, &profile.id).await?;
+        return output(json!({"locked":false}), args.json, "Профиль открыт");
+    }
+    if let Some(Commands::Daemon { stop: true, .. }) = &args.command {
+        ipc::stop(&root, &profile.id).await?;
+        return output(json!({"stopped":true}), args.json, "Служба остановлена");
+    }
+    if let Some(Commands::Daemon { install: true, .. }) = &args.command {
+        shum_cli::service::install(&root, &profile.id)?;
+        return output(
+            json!({"installed":true}),
+            args.json,
+            "Автозапуск службы установлен",
+        );
+    }
+    if !args.relay.is_empty() || args.push_url.is_some() {
+        if !args.relay.is_empty() {
+            shum_transport_nostr::RelayPool::validate_urls(&args.relay)?;
+        }
+        if let Some(url) = args.push_url.as_deref().filter(|url| *url != "off") {
+            shum_transport_nostr::push::PushClient::new(url)?;
+        }
+        ipc::stop(&root, &profile.id).await?;
+        let mut open = profiles.open(Some(&profile.id))?;
+        open.store.transaction(|s| {
+            if !s["cliSettings"].is_object() {
+                s["cliSettings"] = json!({});
+            }
+            if !args.relay.is_empty() {
+                s["cliSettings"]["relays"] = json!(args.relay);
+            }
+            if let Some(url) = &args.push_url {
+                s["cliSettings"]["pushURL"] = if url == "off" {
+                    Value::Null
+                } else {
+                    json!(url)
+                };
+            }
+            Ok(())
+        })?;
+        drop(open);
+    }
+    ipc::ensure(&root, &profile.id).await?;
+    let request = match &args.command {
+        None | Some(Commands::Ui { .. }) | Some(Commands::Open { .. }) => {
+            let contact = match &args.command {
+                Some(Commands::Ui { contact }) => contact.as_deref(),
+                Some(Commands::Open { contact }) => Some(contact.as_str()),
+                _ => None,
+            };
+            if io::stdout().is_terminal() && io::stdin().is_terminal() && !args.json {
+                return ui::run(&root, &profile.id, contact, args.ascii).await;
+            }
+            if let Some(contact) = contact {
+                return stream_chat(&root, &profile.id, contact, args.json).await;
+            }
+            let snapshot = ipc::request(&root, &profile.id, Request::Snapshot).await?;
+            return output(
+                snapshot,
+                args.json,
+                "TUI требует терминал. Используйте shum chats или --json.",
+            );
+        }
+        Some(Commands::Add { link, image }) => {
+            if link.is_some() == image.is_some() {
+                bail!("Укажите одну ссылку либо --image <png>");
+            }
+            Request::Add {
+                link: if let Some(path) = image {
+                    terminal::decode_qr(path)?
+                } else {
+                    link.clone().unwrap()
+                },
+            }
+        }
+        Some(Commands::Invite {
+            contact: Some(contact),
+        }) => Request::Invite {
+            contact: contact.clone(),
+        },
+        Some(Commands::Accept { contact }) => Request::Accept {
+            contact: contact.clone(),
+        },
+        Some(Commands::Decline { contact }) => Request::Decline {
+            contact: contact.clone(),
+        },
+        Some(Commands::Send { contact, text }) => Request::Send {
+            contact: contact.clone(),
+            text: text.clone(),
+        },
+        Some(Commands::Read { contact }) => Request::Read {
+            contact: contact.clone(),
+        },
+        Some(Commands::React { message, reaction }) => Request::Reaction {
+            message: message.clone(),
+            reaction: serde_json::from_value::<ReactionKind>(json!(reaction))
+                .context("Неизвестная реакция")?,
+        },
+        Some(Commands::Clear { contact, confirm }) => {
+            if !confirm
+                && (!io::stdin().is_terminal()
+                    || terminal::prompt("Очистить этот чат здесь? Напишите да: ")? != "да")
+            {
+                bail!("Для очистки требуется --confirm");
+            }
+            Request::Clear {
+                contact: contact.clone(),
+            }
+        }
+        Some(Commands::Cancel { message }) => Request::Cancel {
+            message: message.clone(),
+        },
+        Some(Commands::Block { contact, undo }) => Request::Block {
+            contact: contact.clone(),
+            blocked: !*undo,
+        },
+        Some(Commands::Profile {
+            command: Some(ProfileCommand::Name { name }),
+        }) => Request::Profile {
+            name: Some(name.clone()),
+            bio: None,
+            seed: None,
+        },
+        Some(Commands::Profile {
+            command: Some(ProfileCommand::Bio { text }),
+        }) => Request::Profile {
+            name: None,
+            bio: Some(text.clone()),
+            seed: None,
+        },
+        Some(Commands::Profile {
+            command:
+                Some(ProfileCommand::Avatar {
+                    seed,
+                    random,
+                    photo,
+                }),
+        }) => {
+            if photo.is_some() {
+                bail!("Передача фото требует Bluetooth, адаптер пока не подключён");
+            }
+            let seed = if *random {
+                Some(u64::from_le_bytes(runtime::random()?))
+            } else {
+                *seed
+            };
+            if seed.is_none() {
+                bail!("Укажите --random или --seed <число>");
+            }
+            Request::Profile {
+                name: None,
+                bio: None,
+                seed,
+            }
+        }
+        Some(Commands::Nearby) => {
+            return output(
+                json!({"available":false,"reason":"Bluetooth adapter is not implemented","peers":[]}),
+                args.json,
+                "Bluetooth пока не подключён. Интернет-доставка доступна.",
+            )
+        }
+        _ => Request::Snapshot,
+    };
+    let value = ipc::request(&root, &profile.id, request).await?;
+    match args.command {
+        Some(Commands::Invite { contact: None }) => {
+            let card: Card = serde_json::from_value(value["card"].clone())?;
+            let link = card.invitation()?;
+            if args.json {
+                output(json!({"link":link,"errorCorrection":"M"}), true, "")
+            } else {
+                terminal::print_qr(&link, args.ascii)?;
+                println!("{link}");
+                Ok(())
+            }
+        }
+        Some(Commands::Profile { command: None }) => {
+            if args.json {
+                output(value, true, "")
+            } else {
+                terminal::profile(&value, args.ascii);
+                Ok(())
+            }
+        }
+        Some(Commands::Chats {
+            nearby,
+            invites,
+            unread,
+        }) => {
+            if args.json {
+                let mut filtered = value.clone();
+                filtered["contacts"] = value["contacts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| {
+                        (!nearby || c["nearby"] == true)
+                            && (!invites || c["phase"] == "incomingPending")
+                            && (!unread || c["unread"].as_u64().unwrap_or(0) > 0)
+                    })
+                    .cloned()
+                    .collect();
+                output(filtered, true, "")
+            } else {
+                terminal::chats(&value, nearby, invites, unread, args.ascii);
+                Ok(())
+            }
+        }
+        Some(Commands::Contacts) => {
+            if args.json {
+                output(value["contacts"].clone(), true, "")
+            } else {
+                for c in value["contacts"].as_array().into_iter().flatten() {
+                    println!(
+                        "{}  {}",
+                        terminal::safe(terminal::text(&c["card"]["name"])),
+                        terminal::text(&c["id"])
+                    );
+                }
+                Ok(())
+            }
+        }
+        Some(Commands::Keys {
+            command: KeysCommand::Verify { contact, qr },
+        }) => {
+            let peer = terminal::find_contact(&value, &contact)?;
+            let card: Card = serde_json::from_value(peer["card"].clone())?;
+            let fingerprint = crypto::id(&card.noise_key);
+            let signing = crypto::id(&card.signing_key);
+            if args.json {
+                output(
+                    json!({"iosFingerprint":terminal::fingerprint(&card),"noiseFingerprint":fingerprint,"signingFingerprint":signing,"card":card}),
+                    true,
+                    "",
+                )
+            } else {
+                println!(
+                    "{}\nОтпечаток в iPhone: {}\nNoise / Shum ID: {}\nEd25519: {}\nСверьте отпечаток с собеседником: Профиль → Безопасность.",
+                    terminal::safe(&card.name),
+                    terminal::fingerprint(&card),
+                    fingerprint,
+                    signing
+                );
+                if qr {
+                    terminal::print_qr(&card.invitation()?, args.ascii)?;
+                }
+                Ok(())
+            }
+        }
+        Some(Commands::Status) | Some(Commands::About) | Some(Commands::Daemon { .. }) => {
+            let description=format!("Shum {} · протокол v1\nПрофиль: {}\nРелеи: {}\nBluetooth: адаптер ещё не подключён\nPush API: {}\nДанные: {}",env!("CARGO_PKG_VERSION"),terminal::safe(terminal::text(&value["card"]["name"])),value["relays"].as_array().map_or(0,Vec::len),if value["pushConfigured"]==true{"настроен"}else{"не настроен"},root.display());
+            output(value, args.json, &description)
+        }
+        _ => output(value, args.json, "Сохранено"),
+    }
+}
+async fn stream_chat(
+    root: &std::path::Path,
+    profile: &str,
+    contact: &str,
+    json_mode: bool,
+) -> Result<()> {
+    let mut seen = std::collections::HashMap::new();
+    loop {
+        let snapshot = ipc::request(root, profile, Request::Snapshot).await?;
+        let id = terminal::text(&terminal::find_contact(&snapshot, contact)?["id"]);
+        for message in snapshot["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["contactID"] == id)
+        {
+            if seen
+                .insert(
+                    message["id"].as_str().unwrap_or("").to_owned(),
+                    message.clone(),
+                )
+                .as_ref()
+                != Some(message)
+            {
+                if json_mode {
+                    println!("{message}");
+                } else {
+                    println!(
+                        "{}: {}",
+                        if message["outgoing"] == true {
+                            "я"
+                        } else {
+                            contact
+                        },
+                        terminal::safe(terminal::text(&message["text"]))
+                    );
+                }
+            }
+        }
+        io::stdout().flush()?;
+        ipc::request(
+            root,
+            profile,
+            Request::Focus {
+                contact: Some(id.into()),
+            },
+        )
+        .await?;
+        tokio::select! {_=tokio::signal::ctrl_c()=>break,_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+    }
+    ipc::request(root, profile, Request::Focus { contact: None }).await?;
+    Ok(())
 }
