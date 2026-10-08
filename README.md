@@ -17,9 +17,8 @@
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
   успешно, без предупреждений.
 - `cargo fmt --all -- --check`: успешно.
-- Первый CI остановился на получении приватного протокола во всех трёх ОС:
-  `Input required and not supplied: token`. Требуется `PROTOCOL_READ_TOKEN`
-  (см. раздел CI). Этап 0 пока не закрыт, этап 1 не начат.
+- Для CI настроен отдельный deploy key только для чтения Shum-Protocol;
+  результат проверки трёх ОС будет записан после запуска workflow.
 
 | Crate | Ответственность |
 |---|---|
@@ -71,12 +70,11 @@ cargo install --path crates/shum-cli
 
 GitHub Actions запускает тесты, clippy и проверку форматирования на macOS,
 Linux и Windows. Стандартный `GITHUB_TOKEN` не открывает другой приватный
-репозиторий. В организации hiTechTeam запрещены deploy keys (ответ GitHub
-при настройке: `Deploy keys are disabled for this repository`). Нужен
-fine-grained PAT с правом Contents: read только для Shum-Protocol, сохранённый
-в Actions secret `PROTOCOL_READ_TOKEN` репозитория Shum-Core. CI извлекает
+репозиторий. Владелец организации разрешил deploy keys. Для Shum-Protocol
+настроен отдельный ключ только с правом чтения, его закрытая часть хранится
+в Actions secret `PROTOCOL_DEPLOY_KEY` репозитория Shum-Core. CI извлекает
 ревизию из gitlink `protocol` и получает именно этот коммит. Без секрета
-checkout завершится ошибкой. Токен не хранится в исходниках или отчётах.
+checkout завершится ошибкой. Закрытый ключ не хранится в исходниках и отчётах.
 
 ## Сценарии приёмки
 

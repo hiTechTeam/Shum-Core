@@ -29,7 +29,7 @@ jobs:
           repository: hiTechTeam/Shum-Protocol
           ref: ${{ steps.protocol.outputs.revision }}
           path: protocol
-          token: ${{ secrets.PROTOCOL_READ_TOKEN }}
+          ssh-key: ${{ secrets.PROTOCOL_DEPLOY_KEY }}
           persist-credentials: false
       - name: Select stable Rust
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
