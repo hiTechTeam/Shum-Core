@@ -1,0 +1,10 @@
+[package]
+name = "shum-transport-nostr"
+description = "Shum Nostr relay transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+shum-core.workspace = true

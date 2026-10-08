@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Test and lint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Pinned protocol revision
+        id: protocol
+        shell: bash
+        run: echo "revision=$(git rev-parse HEAD:protocol)" >> "$GITHUB_OUTPUT"
+      - name: Private protocol checkout
+        uses: actions/checkout@v4
+        with:
+          repository: hiTechTeam/Shum-Protocol
+          ref: ${{ steps.protocol.outputs.revision }}
+          path: protocol
+          ssh-key: ${{ secrets.PROTOCOL_DEPLOY_KEY }}
+          persist-credentials: false
+      - name: Select stable Rust
+        run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+      - name: Formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Tests
+        run: cargo +stable test --workspace
+      - name: Clippy
+        run: cargo +stable clippy --workspace --all-targets --all-features -- -D warnings

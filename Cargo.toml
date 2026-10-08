@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/shum-core",
+    "crates/shum-transport-nostr",
+    "crates/shum-transport-ble",
+    "crates/shum-store",
+    "crates/shum-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hiTechTeam/Shum-Core"
+
+[workspace.dependencies]
+shum-core = { path = "crates/shum-core" }
+shum-transport-nostr = { path = "crates/shum-transport-nostr" }
+shum-transport-ble = { path = "crates/shum-transport-ble" }
+shum-store = { path = "crates/shum-store" }
