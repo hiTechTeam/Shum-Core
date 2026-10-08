@@ -12,6 +12,7 @@ pub mod card;
 pub mod crypto;
 pub mod invitation;
 pub mod noise;
+pub mod nostr;
 pub mod packet;
 pub mod profile;
 
