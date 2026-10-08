@@ -18,6 +18,8 @@ def cli(*args, ok=True):
 class Screen:
     def __init__(self):
         self.rows = [[' '] * 80 for _ in range(32)]; self.x = self.y = 0
+        self.backgrounds = [[None] * 80 for _ in range(32)]; self.bg = None
+        self.saved_cursor = (0, 0); self.image_backgrounds = []
         self.pending = ''; self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
     def feed(self, data):
         self.pending += self.decoder.decode(data)
@@ -35,7 +37,9 @@ class Screen:
                 elif cmd=='G':self.x=n-1
                 elif cmd=='d':self.y=n-1
                 elif cmd=='J':
-                    if parts[0] in (2,3): self.rows=[[' ']*80 for _ in range(32)]
+                    if parts[0] in (2,3):
+                        self.rows=[[' ']*80 for _ in range(32)]
+                        self.backgrounds=[[self.bg]*80 for _ in range(32)]
                     elif parts[0]==0:
                         self.rows[self.y][self.x:]=[' ']*(80-self.x)
                         for y in range(self.y+1,32):self.rows[y]=[' ']*80
@@ -44,7 +48,20 @@ class Screen:
                     self.rows[self.y][start:end]=[' ']*(end-start)
                 elif cmd=='X':
                     end=min(80,self.x+n);self.rows[self.y][self.x:end]=[' ']*(end-self.x)
-                elif cmd=='h' and raw=='?1049':self.rows=[[' ']*80 for _ in range(32)];self.x=self.y=0
+                    self.backgrounds[self.y][self.x:end]=[self.bg]*(end-self.x)
+                elif cmd=='m':
+                    i=0
+                    while i<len(parts):
+                        p=parts[i]
+                        if p in (0,49):self.bg=None
+                        if p in (38,48) and i+1<len(parts):
+                            count=3 if parts[i+1]==2 else 1
+                            if p==48:self.bg=tuple(parts[i+2:i+2+count])
+                            i+=count+1
+                        i+=1
+                elif cmd=='h' and raw=='?1049':
+                    self.rows=[[' ']*80 for _ in range(32)];self.x=self.y=0
+                    self.backgrounds=[[None]*80 for _ in range(32)]
                 continue
             if self.pending.startswith('\x1b]'):
                 match=re.match(r'\x1b\][^\x07]*(?:\x07|\x1b\\)',self.pending)
@@ -53,7 +70,19 @@ class Screen:
             if self.pending.startswith('\x1b_'):
                 end=self.pending.find('\x1b\\',2)
                 if end < 0:break
+                header=self.pending[3:end].split(';',1)[0]
+                fields=dict(p.split('=',1) for p in header.split(',') if '=' in p)
+                if fields.get('a')=='T':
+                    w,h=int(fields['c']),int(fields['r'])
+                    assert 0<=self.x and self.x+w<=80 and 0<=self.y and self.y+h<=32
+                    self.image_backgrounds.append([
+                        self.backgrounds[y][x] for y in range(self.y,self.y+h)
+                        for x in range(self.x,self.x+w)])
                 self.pending=self.pending[end+2:];continue
+            if self.pending.startswith('\x1b7'):
+                self.saved_cursor=(self.x,self.y);self.pending=self.pending[2:];continue
+            if self.pending.startswith('\x1b8'):
+                self.x,self.y=self.saved_cursor;self.pending=self.pending[2:];continue
             if self.pending.startswith('\x1b'):
                 if len(self.pending)<2:break
                 self.pending=self.pending[2:];continue
@@ -66,6 +95,7 @@ class Screen:
                 if self.y>=32:self.rows.pop(0);self.rows.append([' ']*80);self.y=31
                 if not unicodedata.combining(c):
                     self.rows[self.y][self.x]=c
+                    self.backgrounds[self.y][self.x]=self.bg
                     self.x += 2 if unicodedata.east_asian_width(c) in ('W','F') else 1
             if self.y>=32:self.rows.pop(0);self.rows.append([' ']*80);self.y=31
     def text(self):return '\n'.join(''.join(row) for row in self.rows)
@@ -76,7 +106,7 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH',32,80,640,640))
         self.before = termios.tcgetattr(slave)
         env = dict(os.environ, TERM='xterm-256color')
-        for name in ['TERM_PROGRAM','KITTY_WINDOW_ID','WT_SESSION']: env.pop(name,None)
+        for name in ['TERM_PROGRAM','KITTY_WINDOW_ID','WT_SESSION','NO_COLOR','CLICOLOR','CLICOLOR_FORCE']: env.pop(name,None)
         if images: env['TERM_PROGRAM']=images
         self.proc = subprocess.Popen([BIN,'--data-dir',str(ROOT),*args],stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)
         self.slave = slave; self.raw = b''; self.screen=Screen(); CHILDREN.append(self)
@@ -172,6 +202,10 @@ try:
             assert not placements(t.raw), 'native images cover a modal'
             t.send('\x1b');t.expect('Сообщение')
             assert len(placements(t.raw))==3
+            assert t.screen.image_backgrounds
+            for background in t.screen.image_backgrounds:
+                assert len(set(background))==1, 'image background has holes or stale selection'
+                assert background[0] in [(10,13,11),(20,48,29)], ('shell background visible under PNG',background[0])
         t.exit('\x11')
         if program=='WarpTerminal': assert not placements(t.raw), 'images retained after exit'
         print('PASS native graphics replacement and cleanup:',program)

@@ -55,12 +55,13 @@ impl DirectImages {
             sequence.push_str(std::str::from_utf8(chunk).expect("base64"));
             sequence.push_str("\x1b\\");
         }
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                frame.buffer_mut()[(x, y)].set_diff_option(CellDiffOption::Skip);
-            }
-        }
-        frame.buffer_mut()[(area.x, area.y)]
+        // Let Ratatui paint every cell's background before placing the PNG.
+        // Skipping those cells exposes the shell theme through transparent
+        // pixels, producing a rectangle that does not match the panel.
+        // The last cell carries the placement so all backgrounds precede it.
+        // Paint that cell too, then save/restore the cursor around the image.
+        let sequence = format!(" \x1b7\x1b[{};{}H{sequence}\x1b8", area.y + 1, area.x + 1);
+        frame.buffer_mut()[(area.right() - 1, area.bottom() - 1)]
             .set_symbol(&sequence)
             .set_diff_option(CellDiffOption::ForcedWidth(NonZeroU16::new(1).unwrap()));
     }

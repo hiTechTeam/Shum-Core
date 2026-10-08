@@ -55,6 +55,16 @@ fn warp_direct_placement_contains_the_complete_original_avatar() {
             );
         })
         .unwrap();
+    // The transparent PNG must reveal the panel, not untouched shell cells.
+    for y in 10..19 {
+        for x in 4..22 {
+            assert_eq!(
+                terminal.backend().buffer()[(x, y)].bg,
+                Color::Rgb(10, 13, 11),
+                "panel background missing under the image at {x},{y}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -124,7 +134,7 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
 }
 
 #[test]
-fn avatar_preview_preserves_area_samples_and_uses_seamless_cell_backgrounds() {
+fn avatar_preview_preserves_samples_with_backgrounds_and_lower_blocks() {
     for seed in [0, 1, 42, 123, 9001] {
         let mut pictures = Pictures::with_colors(Picker::halfblocks(), Colors::Rgb);
         let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
@@ -153,14 +163,14 @@ fn avatar_preview_preserves_area_samples_and_uses_seamless_cell_backgrounds() {
                     });
                     Color::Rgb(c[0], c[1], c[2])
                 };
-                assert_ne!(cell.symbol(), "▄", "avoid lower-block font seams");
+                assert_ne!(cell.symbol(), "▀", "avoid the upper block's top bearing");
                 if rgb(a) == rgb(b) {
                     assert_eq!(cell.symbol(), " ");
                     assert_eq!(cell.bg, rgb(b));
                 } else {
-                    assert_eq!(cell.symbol(), "▀");
-                    assert_eq!(cell.fg, rgb(a));
-                    assert_eq!(cell.bg, rgb(b));
+                    assert_eq!(cell.symbol(), "▄");
+                    assert_eq!(cell.fg, rgb(b));
+                    assert_eq!(cell.bg, rgb(a));
                 }
             }
         }

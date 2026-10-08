@@ -178,12 +178,12 @@ impl Pictures {
                         Color::Rgb(channels[0], channels[1], channels[2])
                     };
                     let (top, bottom) = (composite(a), composite(b));
-                    // A solid cell needs no glyph. Always use the upper block
-                    // otherwise: Terminal.app's lower-block glyph can leave seams.
+                    // Solid cells need no glyph. For split cells the lower
+                    // block avoids the large top bearing of Terminal.app's ▀.
                     if top == bottom {
                         cell.set_char(' ').set_bg(bottom);
                     } else {
-                        cell.set_char('▀').set_fg(top).set_bg(bottom);
+                        cell.set_char('▄').set_fg(bottom).set_bg(top);
                     }
                 }
             }

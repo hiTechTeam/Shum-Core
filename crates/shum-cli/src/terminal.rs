@@ -224,12 +224,11 @@ pub fn avatar(seed: u64, ascii: bool) {
             print!("\x1b[0m");
             match (top[3] > 0, bottom[3] > 0) {
                 (false, false) => print!(" "),
-                (true, false) => print!("{}▀", colors.sgr(top, false)),
-                // Inverse video puts the terminal's own background in the
-                // upper half without using the lower-block glyph with seams.
-                (false, true) => print!("{}\x1b[7m▀", colors.sgr(bottom, false)),
+                // Inverse video keeps the lower half at the shell background.
+                (true, false) => print!("{}\x1b[7m▄", colors.sgr(top, false)),
+                (false, true) => print!("{}▄", colors.sgr(bottom, false)),
                 (true, true) if top == bottom => print!("{} ", colors.sgr(bottom, true)),
-                (true, true) => print!("{}{}▀", colors.sgr(top, false), colors.sgr(bottom, true)),
+                (true, true) => print!("{}{}▄", colors.sgr(bottom, false), colors.sgr(top, true)),
             }
         }
         println!("\x1b[0m");

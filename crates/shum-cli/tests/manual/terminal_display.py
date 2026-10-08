@@ -92,7 +92,7 @@ for program in (["Apple_Terminal"] if legacy else ["Apple_Terminal", "WarpTermin
                         break
                 assert proc.returncode == 0, raw[-1000:]
                 assert b"38;5;" in raw and b"38;2;" not in raw and b"48;2;" not in raw
-                assert "▄".encode() not in raw, "avoid lower-block font seams in standalone avatars"
+                assert "▀".encode() not in raw, "avoid upper-block gaps in standalone avatars"
                 print("PASS Apple Terminal: standalone avatar uses indexed colours")
         finally:
             if proc.poll() is None:
