@@ -11,5 +11,25 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [features]
 default = []
-# UniFFI bindings will be implemented after the protocol API is defined.
-uniffi = []
+uniffi = ["dep:uniffi"]
+
+[dependencies]
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+secp256k1 = { version = "0.31", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+unicode-segmentation = "1.12"
+unicode-normalization = "0.1"
+unicode-general-category = "1"
+uniffi = { version = "0.32.2", optional = true, default-features = false }
+url = "2.5"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = { version = "1", features = ["derive"] }

@@ -6,3 +6,20 @@
 //! belong to the embedding client.
 
 #![forbid(unsafe_code)]
+
+pub mod canonical;
+pub mod card;
+pub mod crypto;
+pub mod invitation;
+
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("invalid {0}")]
+    Invalid(&'static str),
+    #[error("authentication failed")]
+    Authentication,
+    #[error("invalid JSON: {0}")]
+    Json(#[from] serde_json::Error),
+}
+pub type Result<T> = std::result::Result<T, Error>;
