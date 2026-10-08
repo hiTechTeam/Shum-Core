@@ -72,8 +72,10 @@ cargo install --path crates/shum-cli
 
 ## CI
 
-GitHub Actions запускает тесты, clippy и проверку форматирования на macOS,
-Linux и Windows. Стандартный `GITHUB_TOKEN` не открывает другой приватный
+GitHub Actions настроен на ручной запуск (`workflow_dispatch`) по просьбе
+пользователя. Push и pull request автоматически CI не запускают. Ручная
+проверка выполняет тесты, clippy и форматирование на macOS, Linux и Windows.
+Стандартный `GITHUB_TOKEN` не открывает другой приватный
 репозиторий. Владелец организации разрешил deploy keys. Для Shum-Protocol
 настроен отдельный ключ только с правом чтения, его закрытая часть хранится
 в Actions secret `PROTOCOL_DEPLOY_KEY` репозитория Shum-Core. CI извлекает
