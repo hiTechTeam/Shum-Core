@@ -37,6 +37,17 @@ cargo fmt --all -- --check
 
 Для уже клонированного репозитория: `git submodule update --init --recursive`.
 
+На этом Mac rustup установлен через Homebrew. Его команды доступны после:
+
+```sh
+export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+rustc --version
+cargo --version
+```
+
+Это меняет PATH только в текущем терминале; настройки shell автоматически
+не редактируются.
+
 Установка клиента после реализации команд:
 
 ```sh
@@ -49,11 +60,12 @@ cargo install --path crates/shum-cli
 
 GitHub Actions запускает тесты, clippy и проверку форматирования на macOS,
 Linux и Windows. Стандартный `GITHUB_TOKEN` не открывает другой приватный
-репозиторий. Для протокола используется отдельный SSH deploy key только
-с правом чтения `hiTechTeam/Shum-Protocol`; закрытая часть хранится в
-Actions secret `PROTOCOL_DEPLOY_KEY` репозитория Shum-Core. CI извлекает
+репозиторий. В организации hiTechTeam запрещены deploy keys (ответ GitHub
+при настройке: `Deploy keys are disabled for this repository`). Нужен
+fine-grained PAT с правом Contents: read только для Shum-Protocol, сохранённый
+в Actions secret `PROTOCOL_READ_TOKEN` репозитория Shum-Core. CI извлекает
 ревизию из gitlink `protocol` и получает именно этот коммит. Без секрета
-checkout завершится ошибкой. Ключ не хранится в исходниках или отчётах.
+checkout завершится ошибкой. Токен не хранится в исходниках или отчётах.
 
 ## Сценарии приёмки
 
