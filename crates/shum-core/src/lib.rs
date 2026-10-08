@@ -10,11 +10,14 @@
 pub mod canonical;
 pub mod card;
 pub mod crypto;
+pub mod engine;
 pub mod invitation;
 pub mod noise;
 pub mod nostr;
 pub mod packet;
 pub mod profile;
+pub mod queue;
+pub mod rules;
 pub mod wire;
 
 #[cfg(feature = "uniffi")]
