@@ -17,8 +17,12 @@
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
   успешно, без предупреждений.
 - `cargo fmt --all -- --check`: успешно.
-- Для CI настроен отдельный deploy key только для чтения Shum-Protocol;
-  результат проверки трёх ОС будет записан после запуска workflow.
+- Для CI настроен отдельный deploy key только для чтения Shum-Protocol.
+  GitHub не запустил jobs из-за биллинга: `recent account payments have
+  failed or your spending limit needs to be increased`.
+  [Диагностика](https://github.com/hiTechTeam/Shum-Core/actions/runs/37736359146).
+  Облачные проверки трёх ОС пока не выполнены. После исправления биллинга
+  workflow можно запустить вручную: `gh workflow run ci.yml --repo hiTechTeam/Shum-Core`.
 
 | Crate | Ответственность |
 |---|---|
