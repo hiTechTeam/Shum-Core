@@ -335,6 +335,7 @@ pub async fn run(
                 }
             }
         }
+        pictures.clear_on_change(&mut terminal, (wizard.step as u8, wizard.seed))?;
         terminal.draw(|f| draw(f, &wizard, &mut pictures, ascii))?;
         if !event::poll(Duration::from_millis(50))? {
             tokio::task::yield_now().await;

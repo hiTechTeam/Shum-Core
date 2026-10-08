@@ -125,10 +125,18 @@ Swift/Kotlin: проверка карточки, разбор приглашен
 
 ## Установка готового CLI
 
-Для macOS добавлена локальная сборка установщика `.pkg` и пакета Homebrew.
-Установщик добавляет команду `shum` в `/usr/local/bin`. Профили и переписка сохраняются.
-Пакеты ещё не опубликованы. Подготовка выпуска, проверка и ограничения описаны
-в [docs/distribution.md](docs/distribution.md).
+Готовый CLI опубликован для macOS 15+ на Apple Silicon:
+
+```sh
+brew install hitechteam/shum/shum
+shum
+```
+
+Установщик `.pkg` и контрольные суммы доступны в
+[публичных выпусках](https://github.com/hiTechTeam/homebrew-shum/releases).
+Это preview без подписи Developer ID и нотарификации Apple.
+Профили и переписка сохраняются при обновлении. Подробности и состояние остальных
+платформ: [docs/distribution.md](docs/distribution.md).
 
 ## Получение исходников и проверка
 

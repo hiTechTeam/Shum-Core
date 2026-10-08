@@ -20,7 +20,8 @@ use ratatui_image::{
 };
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
     path::Path,
     time::{Duration, Instant},
 };
@@ -62,6 +63,7 @@ pub struct Pictures {
     picker: Picker,
     pub(crate) colors: crate::display::Colors,
     cache: HashMap<(u64, u16, u16), StatefulProtocol>,
+    scene: Option<u64>,
 }
 impl Pictures {
     pub fn new(picker: Picker) -> Self {
@@ -72,10 +74,36 @@ impl Pictures {
             picker,
             colors,
             cache: HashMap::new(),
+            scene: None,
         }
     }
     fn halfblocks(&self) -> bool {
         self.picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks
+    }
+    pub(crate) fn clear_on_change<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+        scene: impl Hash,
+    ) -> std::result::Result<(), B::Error> {
+        if self.halfblocks() {
+            return Ok(());
+        }
+        let mut hash = DefaultHasher::new();
+        scene.hash(&mut hash);
+        let next = hash.finish();
+        if self.scene != Some(next) {
+            // Inline graphics live outside Ratatui's cell diff. ECH erases text,
+            // but Warp can retain the old image under a transparent replacement.
+            // Clear the terminal and its diff buffer together when images move,
+            // change, or become covered by a modal. Ordinary typing stays diffed.
+            // Terminal::clear queries stdin for the cursor position. We render
+            // fullscreen and position the next frame explicitly, so avoid it.
+            terminal.backend_mut().clear()?;
+            terminal.swap_buffers();
+            terminal.swap_buffers();
+            self.scene = Some(next);
+        }
+        Ok(())
     }
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
         self.draw_at(frame, seed, area, false);
@@ -1351,6 +1379,29 @@ async fn run_loop(
                 Err(error) => view.status = error.to_string(),
             }
         }
+        pictures.clear_on_change(
+            terminal,
+            (
+                (
+                    profile.as_str(),
+                    view.opened.as_deref(),
+                    view.tab,
+                    view.selected,
+                    view.command_mode,
+                ),
+                (
+                    view.help,
+                    view.qr.is_some(),
+                    view.info.is_some(),
+                    view.profiles.is_some(),
+                    view.form.is_some(),
+                ),
+                contacts(snapshot, view.tab)
+                    .iter()
+                    .map(|c| (text(&c["id"]), c["card"]["avatarSeed"].as_u64()))
+                    .collect::<Vec<_>>(),
+            ),
+        )?;
         terminal.draw(|f| draw(f, snapshot, view, pictures, ascii))?;
         let action = if event::poll(Duration::from_millis(50))? {
             match event::read()? {

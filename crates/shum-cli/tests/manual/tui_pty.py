@@ -42,8 +42,14 @@ class Screen:
                 elif cmd=='K':
                     start=0 if parts[0] in (1,2) else self.x; end=self.x+1 if parts[0]==1 else 80
                     self.rows[self.y][start:end]=[' ']*(end-start)
+                elif cmd=='X':
+                    end=min(80,self.x+n);self.rows[self.y][self.x:end]=[' ']*(end-self.x)
                 elif cmd=='h' and raw=='?1049':self.rows=[[' ']*80 for _ in range(32)];self.x=self.y=0
                 continue
+            if self.pending.startswith('\x1b]'):
+                match=re.match(r'\x1b\][^\x07]*(?:\x07|\x1b\\)',self.pending)
+                if not match:break
+                self.pending=self.pending[match.end():];continue
             if self.pending.startswith('\x1b'):
                 if len(self.pending)<2:break
                 self.pending=self.pending[2:];continue
@@ -61,12 +67,13 @@ class Screen:
     def text(self):return '\n'.join(''.join(row) for row in self.rows)
 
 class Terminal:
-    def __init__(self, *args):
+    def __init__(self, *args, images=False):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH',32,80,640,640))
         self.before = termios.tcgetattr(slave)
         env = dict(os.environ, TERM='xterm-256color')
         for name in ['TERM_PROGRAM','KITTY_WINDOW_ID','WT_SESSION']: env.pop(name,None)
+        if images: env['TERM_PROGRAM']='WarpTerminal'
         self.proc = subprocess.Popen([BIN,'--data-dir',str(ROOT),*args],stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)
         self.slave = slave; self.raw = b''; self.screen=Screen(); CHILDREN.append(self)
     def read(self, duration=.15):
@@ -82,7 +89,7 @@ class Terminal:
         while time.monotonic()<end:
             if re.sub(r"\s+", "", value) in re.sub(r"\s+", "", self.read()): return
             if self.proc.poll() is not None: break
-        raise AssertionError(f'missing {value!r}: {self.read()[-2200:]}')
+        raise AssertionError(f'missing {value!r} (exit={self.proc.poll()}, raw={self.raw[-400:]!r}, pending={self.screen.pending[:120]!r}): {self.read()[-2200:]}')
     def send(self, text):
         os.write(self.master,text.encode()); self.read()
     def exit(self, keys):
@@ -123,6 +130,22 @@ try:
     cli('-p',aid,'add',b['invitation'])
     t=Terminal('-p',aid,'ui','Друг');t.expect('Сообщение');t.send('qiйшаф123');t.expect('qiйшаф123');t.send('\x1b');t.send('i');t.expect('Мой QR');t.send('\x1b');t.exit('q')
     assert cli('-p',aid,'status')['messages']==[];print('PASS editing does not execute q/i shortcuts')
+    # Real native-image output must erase the old graphics before switching chats.
+    c=cli('--relay','ws://127.0.0.1:9','--push-url','off','init','--headless','--name','Второй')
+    cli('-p',aid,'add',c['invitation'])
+    t=Terminal('-p',aid,'ui','Друг',images=True);t.expect('Сообщение')
+    assert b']1337;File=' in t.raw
+    assert b'\x1b[6n' not in t.raw, 'redraw must not wait for a cursor-position response'
+    for name in ['Второй','Друг','Второй']:
+        t.send('\x1b'); t.send('/open '+name)
+        before=len(t.raw);t.send('\r');t.expect('Сообщение')
+        changed=t.raw[before:]
+        assert b'\x1b[2J' in changed, 'old native graphics were not cleared'
+        assert changed.index(b'\x1b[2J') < changed.index(b']1337;File='), 'clear must precede new images'
+        before=len(t.raw);t.send('draft')
+        assert b'\x1b[2J' not in t.raw[before:], 'typing must not repeatedly clear the screen'
+        t.send('\x7f'*5)
+    t.exit('\x11');print('PASS native graphics cleared on chat switch without flicker while typing')
     # A c2 lookup is pending for up to 20 seconds; UI must still accept exit.
     link='shum://c2/'+base64.urlsafe_b64encode(bytes.fromhex(b['card']['nostrKey'])).decode().rstrip('=')
     for quit_key in ['\x03','\x11','\x1b[21~']:
