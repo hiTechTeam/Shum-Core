@@ -1,8 +1,9 @@
 name: Rust
 
-on:
+"on":
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,7 +23,9 @@ jobs:
       - name: Pinned protocol revision
         id: protocol
         shell: bash
-        run: echo "revision=$(git rev-parse HEAD:protocol)" >> "$GITHUB_OUTPUT"
+        run: |
+          revision=$(git rev-parse HEAD:protocol)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
       - name: Private protocol checkout
         uses: actions/checkout@v4
         with:
