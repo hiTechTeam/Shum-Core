@@ -48,6 +48,16 @@ pub struct Avatar {
     pub pixels: Vec<[u8; 4]>,
 }
 impl Avatar {
+    /// A head thumbnail for terminals whose block glyphs do not fill a cell.
+    /// Keep the original 18-grid detail, crop the shoulders, and draw each
+    /// sample as two background-coloured spaces rather than a font glyph.
+    pub fn face_cells(&self) -> Vec<[u8; 4]> {
+        let pixels = self.sampled(18);
+        (1..13)
+            .flat_map(|y| pixels[y * 18 + 3..y * 18 + 15].iter().copied())
+            .collect()
+    }
+
     fn rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {
         for row in y..(y + h).min(36) {
             for col in x..(x + w).min(36) {

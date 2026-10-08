@@ -214,8 +214,23 @@ pub fn avatar(seed: u64, ascii: bool) {
         return;
     }
     let avatar = crate::avatar::render_subject(seed);
+    let display = crate::display::Display::detect();
+    if display.cell_avatars {
+        for row in avatar.face_cells().chunks(12) {
+            print!("  ");
+            for &pixel in row {
+                if pixel[3] == 0 {
+                    print!("\x1b[0m  ");
+                } else {
+                    print!("{}  ", display.colors.sgr(pixel, true));
+                }
+            }
+            println!("\x1b[0m");
+        }
+        return;
+    }
     let pixels = avatar.sampled(18);
-    let colors = crate::display::Display::detect().colors;
+    let colors = display.colors;
     for y in (0..18).step_by(2) {
         print!("  ");
         for x in 0..18 {

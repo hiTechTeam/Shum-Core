@@ -225,17 +225,41 @@ fn draw_content(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures,
             Paragraph::new("Аватар · пиксельный, его видят все").style(muted),
             row(8, 1),
         );
-        let tall = area.height >= 24;
-        let avatar_height = if tall { 9 } else { 3 };
+        let cells = pictures.cell_avatars;
+        let tall = area.height >= (if cells { 27 } else { 24 }) && (!cells || area.width >= 60);
+        let avatar_height = if tall {
+            if cells {
+                12
+            } else {
+                9
+            }
+        } else {
+            3
+        };
         if !ascii {
             pictures.draw(
                 frame,
                 wizard.seed,
-                Rect::new(x + 2, area.y + 10, if tall { 18 } else { 6 }, avatar_height),
+                Rect::new(
+                    x + 2,
+                    area.y + 10,
+                    if tall {
+                        if cells {
+                            24
+                        } else {
+                            18
+                        }
+                    } else {
+                        6
+                    },
+                    avatar_height,
+                ),
             );
         }
-        let dx = if ascii {
+        let dx = if ascii || (cells && !tall) {
             0
+        } else if cells {
+            28
         } else if tall {
             24
         } else {
@@ -278,7 +302,7 @@ fn draw_content(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures,
         if tall && wizard.step == Step::Avatar {
             frame.render_widget(
                 Paragraph::new("Фото-аватары пока недоступны.").style(muted),
-                row(21, 1),
+                row(if cells { 24 } else { 21 }, 1),
             );
         }
     }

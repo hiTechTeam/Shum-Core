@@ -128,6 +128,11 @@ fn tui_renders_chats_avatars_and_empty_state_in_small_terminals() {
                 .map(|c| c.symbol())
                 .collect::<String>();
             assert!(screen.contains("Аня"));
+            assert_eq!(
+                screen.matches("Аня").count(),
+                if width >= 60 { 2 } else { 1 },
+                "name belongs in the list and header, not the border"
+            );
             assert!(screen.contains("Сообщение"));
             assert!(!screen.contains('\x1b'));
             if width == 80 && !ascii {

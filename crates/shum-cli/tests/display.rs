@@ -74,11 +74,13 @@ fn terminal_capabilities_distinguish_apple_terminal_and_warp() {
             Display::for_terminal("Apple_Terminal", "xterm-256color", colorterm, false, false);
         assert_eq!(apple.colors, Colors::Indexed);
         assert_eq!(apple.images, ProtocolType::Halfblocks);
+        assert!(apple.cell_avatars);
     }
     let warp = Display::for_terminal("WarpTerminal", "xterm-256color", "", false, false);
     assert_eq!(warp.colors, Colors::Rgb);
     assert_eq!(warp.images, ProtocolType::Iterm2);
     assert!(warp.direct_images);
+    assert!(!warp.cell_avatars);
     assert_eq!(
         Display::for_terminal("", "xterm-256color", "", false, false).colors,
         Colors::Indexed
@@ -95,19 +97,39 @@ fn terminal_capabilities_distinguish_apple_terminal_and_warp() {
 
 #[test]
 fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
-    let mut pictures = Pictures::with_colors(Picker::halfblocks(), Colors::Indexed);
+    let mut pictures = Pictures::with_display(
+        Picker::halfblocks(),
+        Display::for_terminal("Apple_Terminal", "xterm-256color", "", false, false),
+    );
     let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
     let snapshot = json!({"card":{"name":"Test","avatarSeed":42},"contacts":[{"id":"one","phase":"accepted","card":{"name":"Friend","avatarSeed":42}}]});
     let mut view = View::chat("one");
-    for modal in [false, true] {
-        view.help = modal;
-        terminal
-            .draw(|f| shum_cli::ui::draw(f, &snapshot, &mut view, &mut pictures, false))
-            .unwrap();
-        assert!(terminal.backend().buffer().content.iter().all(|c| {
-            !matches!(c.fg, Color::Rgb(..) | Color::Reset)
-                && !matches!(c.bg, Color::Rgb(..) | Color::Reset)
-        }));
+    for (width, height) in [(80, 32), (60, 20), (40, 16), (140, 45)] {
+        terminal.backend_mut().resize(width, height);
+        terminal.autoresize().unwrap();
+        for modal in [false, true] {
+            view.help = modal;
+            terminal
+                .draw(|f| shum_cli::ui::draw(f, &snapshot, &mut view, &mut pictures, false))
+                .unwrap();
+            assert!(terminal.backend().buffer().content.iter().all(|c| {
+                !matches!(c.fg, Color::Rgb(..) | Color::Reset)
+                    && !matches!(c.bg, Color::Rgb(..) | Color::Reset)
+            }));
+            if !modal {
+                let buffer = terminal.backend().buffer();
+                let text = buffer
+                    .content
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert_eq!(
+                    text.matches("Friend").count(),
+                    if width >= 60 { 2 } else { 1 }
+                );
+                assert!(!text.contains(['▀', '▄']));
+            }
+        }
     }
     let wizard = Wizard {
         step: Step::Avatar,
@@ -131,6 +153,55 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
         .collect::<String>();
     assert!(text.contains("Shum"));
     assert!(!text.contains("ШУМ"));
+}
+
+#[test]
+fn apple_terminal_avatars_use_only_background_cells_and_keep_facial_details() {
+    let display = Display::for_terminal("Apple_Terminal", "xterm-256color", "", false, false);
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol/vectors/01-avatar-pixels.json"
+    ))
+    .unwrap();
+    for case in fixture["cases"].as_array().unwrap() {
+        let seed = case["seed"].as_str().unwrap().parse().unwrap();
+        let mut pictures = Pictures::with_display(Picker::halfblocks(), display);
+        let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+        let wizard = Wizard {
+            step: Step::Avatar,
+            name: "Test".into(),
+            seed,
+            error: String::new(),
+            file_keys: true,
+        };
+        terminal
+            .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
+            .unwrap();
+        let reference = shum_cli::avatar::render_subject(seed).sampled(18);
+        for y in 0..12 {
+            for x in 0..12 {
+                // Compare to the original grid, without scaling away eyes or mouth.
+                let pixel = reference[(y + 1) * 18 + x + 3];
+                let rgb: [u8; 3] = std::array::from_fn(|i| {
+                    ((u32::from(pixel[i]) * u32::from(pixel[3])
+                        + [10, 13, 11][i] * (255 - u32::from(pixel[3]))
+                        + 127)
+                        / 255) as u8
+                });
+                for dx in 0..2 {
+                    let cell = &terminal.backend().buffer()[(4 + x as u16 * 2 + dx, 10 + y as u16)];
+                    assert_eq!(
+                        cell.symbol(),
+                        " ",
+                        "a font glyph cannot create seams in the avatar"
+                    );
+                    assert_eq!(
+                        cell.bg,
+                        display.colors.color(Color::Rgb(rgb[0], rgb[1], rgb[2]))
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

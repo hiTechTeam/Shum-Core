@@ -66,6 +66,7 @@ pub struct Pictures {
     scene: Option<u64>,
     direct: Option<crate::graphics::DirectImages>,
     hide_direct: bool,
+    pub(crate) cell_avatars: bool,
 }
 impl Pictures {
     pub fn new(picker: Picker) -> Self {
@@ -76,6 +77,7 @@ impl Pictures {
             && picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
             && !picker.tmux_detected();
         let mut result = Self::with_colors(picker, display.colors);
+        result.cell_avatars = display.cell_avatars;
         if direct {
             result.direct = Some(crate::graphics::DirectImages::default());
         }
@@ -89,6 +91,7 @@ impl Pictures {
             scene: None,
             direct: None,
             hide_direct: false,
+            cell_avatars: false,
         }
     }
     fn halfblocks(&self) -> bool {
@@ -142,6 +145,38 @@ impl Pictures {
             return;
         }
         if self.halfblocks() {
+            if self.cell_avatars {
+                if area.width < 24 || area.height < 12 {
+                    return;
+                }
+                let pixels = crate::avatar::render_subject(seed).face_cells();
+                let x0 = area.x + (area.width - 24) / 2;
+                let y0 = area.y + (area.height - 12) / 2;
+                for y in 0..12 {
+                    for x in 0..12 {
+                        let pixel = pixels[y * 12 + x];
+                        if pixel[3] == 0 {
+                            continue;
+                        }
+                        for dx in 0..2 {
+                            let cell =
+                                &mut frame.buffer_mut()[(x0 + x as u16 * 2 + dx, y0 + y as u16)];
+                            let background = match cell.bg {
+                                Color::Rgb(r, g, b) => [r, g, b],
+                                _ => [10, 13, 11],
+                            };
+                            let c: [u8; 3] = std::array::from_fn(|i| {
+                                ((u32::from(pixel[i]) * u32::from(pixel[3])
+                                    + u32::from(background[i]) * (255 - u32::from(pixel[3]))
+                                    + 127)
+                                    / 255) as u8
+                            });
+                            cell.set_char(' ').set_bg(Color::Rgb(c[0], c[1], c[2]));
+                        }
+                    }
+                }
+                return;
+            }
             // Smaller full portraits lose their single-pixel facial details.
             // Compact layouts omit the picture instead of displaying a blob.
             if area.width < 18 || area.height < 9 {
@@ -404,8 +439,16 @@ fn draw_content(
     let listed = contacts(snapshot, view.tab);
     view.selected = view.selected.min(listed.len().saturating_sub(1));
     let full_empty = listed.is_empty() && view.opened.is_none();
-    let columns = Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(64)])
-        .split(vertical[2]);
+    let columns = if pictures.cell_avatars && !ascii && area.width >= 80 {
+        Layout::horizontal([
+            Constraint::Length((area.width * 36 / 100).max(38)),
+            Constraint::Min(1),
+        ])
+        .split(vertical[2])
+    } else {
+        Layout::horizontal([Constraint::Percentage(36), Constraint::Percentage(64)])
+            .split(vertical[2])
+    };
     let chat_area = if full_empty || area.width < 60 {
         vertical[2]
     } else {
@@ -427,9 +470,16 @@ fn draw_content(
         );
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
-        let show_avatars = !ascii && (!pictures.halfblocks() || inner.height >= 9);
+        let show_avatars = !ascii
+            && if pictures.cell_avatars {
+                inner.height >= 12 && inner.width >= 36
+            } else {
+                !pictures.halfblocks() || inner.height >= 9
+            };
         let row_height = if !show_avatars {
             2
+        } else if pictures.cell_avatars {
+            12
         } else if pictures.halfblocks() {
             9
         } else {
@@ -451,7 +501,14 @@ fn draw_content(
                 Style::default()
             };
             frame.render_widget(Paragraph::new("").style(row_style), row);
-            let avatar_width = (if pictures.halfblocks() { 18 } else { 6 }).min(row.width);
+            let avatar_width = (if pictures.cell_avatars {
+                24
+            } else if pictures.halfblocks() {
+                18
+            } else {
+                6
+            })
+            .min(row.width);
             let inset = (if !show_avatars { 2 } else { avatar_width + 1 }).min(row.width);
             if show_avatars {
                 if let Some(seed) = c["card"]["avatarSeed"].as_u64() {
@@ -569,12 +626,19 @@ fn draw_content(
             .map(|c| safe(text(&c["card"]["name"])))
             .unwrap_or_else(|| "Чат".into());
         let parts = Layout::vertical([Constraint::Min(3), Constraint::Length(3)]).split(chat_area);
-        let block = border(&title, ascii);
+        let block = border("", ascii);
         let inner = block.inner(parts[0]);
         frame.render_widget(block, parts[0]);
-        let show_avatar = !ascii && (!pictures.halfblocks() || inner.height >= 12);
+        let show_avatar = !ascii
+            && if pictures.cell_avatars {
+                inner.height >= 15 && inner.width >= 36
+            } else {
+                !pictures.halfblocks() || inner.height >= 12
+            };
         let header_height = if !show_avatar {
             2
+        } else if pictures.cell_avatars {
+            12
         } else if pictures.halfblocks() {
             9
         } else {
