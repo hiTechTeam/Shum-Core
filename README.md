@@ -10,6 +10,17 @@
 завершается с кодом 2. Наличие workspace и успешная сборка каркаса не
 означают совместимость с iPhone.
 
+Проверка 8 октября 2026 на macOS, Rust/Cargo 1.99.0:
+
+- `cargo test --workspace`: успешно, `0 passed; 0 failed` во всех crates и
+  doc-tests. Это проверка сборки каркаса; тестов протокола пока нет.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  успешно, без предупреждений.
+- `cargo fmt --all -- --check`: успешно.
+- Первый CI остановился на получении приватного протокола во всех трёх ОС:
+  `Input required and not supplied: token`. Требуется `PROTOCOL_READ_TOKEN`
+  (см. раздел CI). Этап 0 пока не закрыт, этап 1 не начат.
+
 | Crate | Ответственность |
 |---|---|
 | `shum-core` | Байты и события на входе, действия на выходе; без ввода-вывода |
