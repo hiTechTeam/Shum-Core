@@ -169,10 +169,11 @@ pub struct Runtime {
     stopped: bool,
     last_error: Option<String>,
     push_error: Option<String>,
+    push_last: Value,
 }
 enum Job {
     Published(String, bool),
-    Pushed(Option<String>),
+    Pushed(String, Option<String>),
 }
 impl Runtime {
     pub fn new(mut profile: OpenProfile, relays: &[String], push: Option<&str>) -> Result<Self> {
@@ -202,6 +203,7 @@ impl Runtime {
             stopped: false,
             last_error: None,
             push_error: None,
+            push_last: Value::Null,
         })
     }
     fn routes(&self) -> Routes {
@@ -279,13 +281,15 @@ impl Runtime {
                     {
                         let card = self.engine.inbox.own.clone();
                         let key = Secret32::new(*self.profile.keys.signing.expose());
+                        self.push_last =
+                            json!({"eventId":event,"state":"sending","updatedAt":now()});
                         self.jobs.spawn(async move {
-                            Job::Pushed(
-                                push.notify(&card, &key, &recipient, &event, kind)
-                                    .await
-                                    .err()
-                                    .map(|e| e.to_string()),
-                            )
+                            let error = push
+                                .notify(&card, &key, &recipient, &event, kind)
+                                .await
+                                .err()
+                                .map(|e| format!("{:#}", anyhow::Error::new(e)));
+                            Job::Pushed(event, error)
                         });
                     }
                 }
@@ -351,7 +355,7 @@ impl Runtime {
             messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply}));
         }
         for m in &self.engine.outbox.messages {
-            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone())}));
+            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"nostrAccepted":m.delivery.nostr_accepted,"pushScheduled":m.push_sent,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone())}));
         }
         messages.sort_by_key(|m| {
             (
@@ -363,7 +367,7 @@ impl Runtime {
             messages.drain(..messages.len() - 2000);
         }
         let reactions:Vec<_>=self.engine.inbox.reactions.iter().map(|((message,person),mark)|json!({"messageID":message,"personID":person,"mark":mark})).collect();
-        json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"messages":messages,"reactions":reactions,"relays":self.pool.connected(),"bluetooth":self.bluetooth,"pushConfigured":self.push.is_some(),"pushError":self.push_error,"error":self.last_error,"version":env!("CARGO_PKG_VERSION")})
+        json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"messages":messages,"reactions":reactions,"relays":self.pool.connected(),"bluetooth":self.bluetooth,"pushConfigured":self.push.is_some(),"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"version":env!("CARGO_PKG_VERSION")})
     }
     fn command(&mut self, request: Request) -> Result<Value> {
         match request {
@@ -739,7 +743,11 @@ impl Runtime {
                 update=self.updates.recv()=> {if let Some(RelayUpdate::Event {event,..})=update {if let Err(error)=self.incoming(*event){self.last_error=Some(error.to_string());}}}
                 result=self.jobs.join_next(),if !self.jobs.is_empty()=> {match result {
                     Some(Ok(Job::Published(operation,accepted)))=>{self.inflight.remove(&operation);if let Err(error)=self.apply(|e,c|{e.outbox.relay_result(&operation,accepted,c.now,false);Ok(vec![])}){self.last_error=Some(error.to_string());}},
-                    Some(Ok(Job::Pushed(error)))=>self.push_error=error,
+                    // A slow earlier request must not replace the latest event's status.
+                    Some(Ok(Job::Pushed(event,error))) if self.push_last["eventId"].as_str() == Some(event.as_str())=>{
+                        self.push_last=json!({"eventId":event,"state":if error.is_some(){"failed"}else{"accepted"},"error":error,"updatedAt":now()});
+                        self.push_error=error;
+                    },
                     _=>{},
                 }}
                 update=self.ble_updates.recv(),if self.ble.is_some()=>{if let Some(update)=update{if let Err(error)=self.ble_update(update){self.bluetooth["error"]=json!(error.to_string());}}else{self.ble.take();self.nearby.clear();self.bluetooth["error"]=json!("Bluetooth worker stopped");}}

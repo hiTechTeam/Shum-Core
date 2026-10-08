@@ -115,7 +115,7 @@ impl PushClient {
             return Err(Error::Configuration);
         }
         let body = notification_body(card, recipient, event, kind)?;
-        let mut last_status = None;
+        let mut last_error = Error::Configuration;
         for delay in [0, 2, 5, 15, 30, 60] {
             if delay > 0 {
                 tokio::time::sleep(Duration::from_secs(delay)).await;
@@ -156,14 +156,14 @@ impl PushClient {
                     if status.is_success() {
                         return Ok(());
                     }
-                    last_status = Some(status.as_u16());
+                    last_error = Error::HttpStatus(status.as_u16());
                     if status.is_client_error() && status.as_u16() != 429 {
                         return Err(Error::HttpStatus(status.as_u16()));
                     }
                 }
-                Err(_) => continue,
+                Err(error) => last_error = Error::Http(error),
             }
         }
-        Err(last_status.map_or(Error::Publication, Error::HttpStatus))
+        Err(last_error)
     }
 }

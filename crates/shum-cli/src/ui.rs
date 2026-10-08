@@ -663,7 +663,10 @@ fn draw_content(
     let status = if view.status.is_empty() && view.tab == 1 {
         &nearby_status
     } else if view.status.is_empty() {
-        text(&snapshot["error"])
+        snapshot["error"]
+            .as_str()
+            .or(snapshot["pushError"].as_str())
+            .unwrap_or("")
     } else {
         &view.status
     };
@@ -1109,7 +1112,7 @@ fn parse_command(input: &str, current: Option<&str>, snapshot: &Value) -> Result
         ["/chats","--nearby"]|["/nearby"]=>return Ok(Action::Tab(1)),
         ["/chats","--invites"]=>return Ok(Action::Tab(2)),
         ["/chats","--unread"]=>return Ok(Action::Tab(3)),
-        ["/status"|"/about"]=>return Ok(Action::Info("Shum".into(),format!("Версия {} · протокол v1\nПрофиль: {}\nРелеев подключено: {}\n{}\n{}",env!("CARGO_PKG_VERSION"),safe(text(&snapshot["card"]["name"])),snapshot["relays"].as_array().map_or(0,Vec::len),bluetooth_status(snapshot),safe(text(&snapshot["error"]))))),
+        ["/status"|"/about"]=>return Ok(Action::Info("Shum".into(),format!("Версия {} · протокол v1\nПрофиль: {}\nРелеев подключено: {}\n{}\nPush API: {}\n{}",env!("CARGO_PKG_VERSION"),safe(text(&snapshot["card"]["name"])),snapshot["relays"].as_array().map_or(0,Vec::len),bluetooth_status(snapshot),crate::terminal::push_status(snapshot),safe(text(&snapshot["error"]))))),
         ["/keys","verify",who]=>{let c:shum_core::card::Card=serde_json::from_value(find_contact(snapshot,who)?["card"].clone())?;return Ok(Action::Info("Сверка ключей".into(),format!("{}\n\nОтпечаток как в iPhone: {}\n\nShum ID: {}",safe(&c.name),crate::terminal::fingerprint(&c),c.id())));},
         _=>bail!("Команда или аргументы не распознаны. /help: список и примеры"),
     };

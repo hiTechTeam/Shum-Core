@@ -462,3 +462,168 @@ async fn command_filters_decline_block_cancel_profile_and_validation() {
         .is_empty());
     relay.abort();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_reports_push_rejection_and_server_acceptance_for_offline_recipient() {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("profiles");
+    let (relay, server) = relay().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let push_url = format!("http://{}", listener.local_addr().unwrap());
+    let response_status = Arc::new(AtomicU16::new(202));
+    let status = response_status.clone();
+    let (requests, mut received) = tokio::sync::mpsc::channel(16);
+    let push_server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                header.push(socket.read_u8().await.unwrap());
+                assert!(header.len() < 16384);
+            }
+            let header = String::from_utf8(header).unwrap();
+            assert!(header.starts_with("POST /v1/notifications HTTP/1.1\r\n"));
+            let headers: std::collections::HashMap<_, _> = header
+                .lines()
+                .skip(1)
+                .filter_map(|line| line.split_once(':'))
+                .map(|(key, value)| (key.to_ascii_lowercase(), value.trim().to_string()))
+                .collect();
+            let length: usize = headers["content-length"].parse().unwrap();
+            assert!(length < 16384);
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).await.unwrap();
+            let signing = format!(
+                "SHUM1\nPOST\n/v1/notifications\n{}\n{}\n{}",
+                headers["x-shum-timestamp"],
+                headers["x-shum-nonce"],
+                hex::encode(shum_core::crypto::sha256(&body))
+            );
+            let public = URL_SAFE_NO_PAD
+                .decode(&headers["x-shum-public-key"])
+                .unwrap();
+            let signature = URL_SAFE_NO_PAD
+                .decode(&headers["x-shum-signature"])
+                .unwrap();
+            assert!(shum_core::crypto::verify_ed(
+                &public,
+                &signature,
+                signing.as_bytes()
+            ));
+            requests
+                .send(serde_json::from_slice::<Value>(&body).unwrap())
+                .await
+                .unwrap();
+            let response = format!(
+                "HTTP/1.1 {} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",
+                status.load(Ordering::SeqCst)
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let a = command(
+        &root,
+        None,
+        &[
+            "--relay",
+            &relay,
+            "--push-url",
+            &push_url,
+            "init",
+            "--name",
+            "Alice",
+            "--headless",
+        ],
+    );
+    let b = command(
+        &root,
+        None,
+        &[
+            "--relay",
+            &relay,
+            "--push-url",
+            "off",
+            "init",
+            "--name",
+            "Bob",
+            "--headless",
+        ],
+    );
+    let aid = a["profile"]["id"].as_str().unwrap();
+    let bid = b["profile"]["id"].as_str().unwrap();
+    let _da = daemon(&root, aid);
+    let mut db = daemon(&root, bid);
+    wait(&root, aid, |s| {
+        s["relays"].as_array().is_some_and(|r| !r.is_empty())
+    })
+    .await;
+    wait(&root, bid, |s| {
+        s["relays"].as_array().is_some_and(|r| !r.is_empty())
+    })
+    .await;
+    command(
+        &root,
+        Some(aid),
+        &["add", b["invitation"].as_str().unwrap()],
+    );
+    command(
+        &root,
+        Some(bid),
+        &["add", a["invitation"].as_str().unwrap()],
+    );
+    command(&root, Some(aid), &["invite", "Bob"]);
+    wait(&root, bid, |s| {
+        s["contacts"][0]["phase"] == "incomingPending"
+    })
+    .await;
+    command(&root, Some(bid), &["accept", "Alice"]);
+    wait(&root, aid, |s| s["contacts"][0]["phase"] == "accepted").await;
+    db.0.kill().unwrap();
+    db.0.wait().unwrap();
+    for (http, state) in [(401, "failed"), (202, "accepted")] {
+        response_status.store(http, Ordering::SeqCst);
+        command(&root, Some(aid), &["send", "Bob", "Push transport test"]);
+        let sent = snapshot(&root, aid).await;
+        let event = sent["messages"].as_array().unwrap().last().unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let result = wait(&root, aid, |s| {
+            s["pushLast"]["eventId"] == event && s["pushLast"]["state"] == state
+        })
+        .await;
+        let message = result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == event)
+            .unwrap();
+        assert_eq!(message["status"], "forwarding");
+        assert_eq!(message["nostrAccepted"], true);
+        assert_eq!(message["pushScheduled"], true);
+        let body = timeout(Duration::from_secs(5), async {
+            loop {
+                let body = received.recv().await.unwrap();
+                if body["event_id"] == event {
+                    break body;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(body["recipient_id"], b["profile"]["ownerId"]);
+        assert_eq!(body["kind"], "message");
+        let display = shum_cli::terminal::status(&result, &root, true);
+        if http == 401 {
+            assert!(result["pushError"].as_str().unwrap().contains("HTTP 401"));
+            assert!(display.contains("HTTP 401"));
+        } else {
+            assert!(result["pushError"].is_null());
+            assert!(display.contains("последний запрос принят сервером"));
+        }
+    }
+    push_server.abort();
+    server.abort();
+}

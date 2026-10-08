@@ -457,6 +457,20 @@ pub fn bluetooth(snapshot: &Value, palette: Palette) -> String {
     palette.paint(tone, safe(&crate::ui::bluetooth_status(snapshot)))
 }
 
+pub fn push_status(snapshot: &Value) -> String {
+    if snapshot["pushConfigured"] != true {
+        return "выключен".into();
+    }
+    match snapshot["pushLast"]["state"].as_str() {
+        Some("sending") => "отправляется запрос".into(),
+        Some("accepted") => "последний запрос принят сервером".into(),
+        _ => match snapshot["pushError"].as_str() {
+            Some(error) => format!("ошибка: {}", safe(error)),
+            None => "настроен, результат запроса неизвестен".into(),
+        },
+    }
+}
+
 pub fn status(snapshot: &Value, root: &Path, ascii: bool) -> String {
     let p = Palette::stdout(ascii);
     let relays = snapshot["relays"].as_array().map_or(0, Vec::len);
@@ -477,11 +491,14 @@ pub fn status(snapshot: &Value, root: &Path, ascii: bool) -> String {
         ),
         bluetooth(snapshot, p),
         p.paint(Tone::Muted, "Push API:"),
-        if snapshot["pushConfigured"] == true {
-            "настроен"
-        } else {
-            "не настроен"
-        },
+        p.paint(
+            if snapshot["pushError"].is_string() {
+                Tone::Warning
+            } else {
+                Tone::Muted
+            },
+            push_status(snapshot)
+        ),
         p.paint(Tone::Muted, "Данные:"),
         safe(&root.display().to_string())
     )
