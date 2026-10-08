@@ -146,15 +146,16 @@ impl Pictures {
         }
         if self.halfblocks() {
             if self.cell_avatars {
-                if area.width < 24 || area.height < 12 {
+                if area.width < 18 || area.height < 9 {
                     return;
                 }
-                let pixels = crate::avatar::render_subject(seed).face_cells();
-                let x0 = area.x + (area.width - 24) / 2;
-                let y0 = area.y + (area.height - 12) / 2;
-                for y in 0..12 {
-                    for x in 0..12 {
-                        let pixel = pixels[y * 12 + x];
+                let pixels =
+                    crate::avatar::render_subject(seed).compact_cells(crate::avatar::kind(seed));
+                let x0 = area.x + (area.width - 18) / 2;
+                let y0 = area.y + (area.height - 9) / 2;
+                for y in 0..9 {
+                    for x in 0..9 {
+                        let pixel = pixels[y * 9 + x];
                         if pixel[3] == 0 {
                             continue;
                         }
@@ -441,7 +442,7 @@ fn draw_content(
     let full_empty = listed.is_empty() && view.opened.is_none();
     let columns = if pictures.cell_avatars && !ascii && area.width >= 80 {
         Layout::horizontal([
-            Constraint::Length((area.width * 36 / 100).max(38)),
+            Constraint::Length((area.width * 36 / 100).max(32)),
             Constraint::Min(1),
         ])
         .split(vertical[2])
@@ -472,14 +473,12 @@ fn draw_content(
         frame.render_widget(block, list_area);
         let show_avatars = !ascii
             && if pictures.cell_avatars {
-                inner.height >= 12 && inner.width >= 36
+                inner.height >= 9 && inner.width >= 30
             } else {
                 !pictures.halfblocks() || inner.height >= 9
             };
         let row_height = if !show_avatars {
             2
-        } else if pictures.cell_avatars {
-            12
         } else if pictures.halfblocks() {
             9
         } else {
@@ -501,14 +500,7 @@ fn draw_content(
                 Style::default()
             };
             frame.render_widget(Paragraph::new("").style(row_style), row);
-            let avatar_width = (if pictures.cell_avatars {
-                24
-            } else if pictures.halfblocks() {
-                18
-            } else {
-                6
-            })
-            .min(row.width);
+            let avatar_width = (if pictures.halfblocks() { 18 } else { 6 }).min(row.width);
             let inset = (if !show_avatars { 2 } else { avatar_width + 1 }).min(row.width);
             if show_avatars {
                 if let Some(seed) = c["card"]["avatarSeed"].as_u64() {
@@ -631,14 +623,12 @@ fn draw_content(
         frame.render_widget(block, parts[0]);
         let show_avatar = !ascii
             && if pictures.cell_avatars {
-                inner.height >= 15 && inner.width >= 36
+                inner.height >= 12 && inner.width >= 30
             } else {
                 !pictures.halfblocks() || inner.height >= 12
             };
         let header_height = if !show_avatar {
             2
-        } else if pictures.cell_avatars {
-            12
         } else if pictures.halfblocks() {
             9
         } else {

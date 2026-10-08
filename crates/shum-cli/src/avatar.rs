@@ -48,14 +48,57 @@ pub struct Avatar {
     pub pixels: Vec<[u8; 4]>,
 }
 impl Avatar {
-    /// A head thumbnail for terminals whose block glyphs do not fill a cell.
-    /// Keep the original 18-grid detail, crop the shoulders, and draw each
-    /// sample as two background-coloured spaces rather than a font glyph.
-    pub fn face_cells(&self) -> Vec<[u8; 4]> {
-        let pixels = self.sampled(18);
-        (1..13)
-            .flat_map(|y| pixels[y * 18 + 3..y * 18 + 15].iter().copied())
-            .collect()
+    /// The entire v1 portrait on a 9×9 grid for background-coloured cells.
+    /// Keep the source palette instead of blurring neighbouring colours.
+    pub fn compact_cells(&self, kind: Kind) -> Vec<[u8; 4]> {
+        let mut result = vec![[0; 4]; 9 * 9];
+        for y in 0..9 {
+            for x in 0..9 {
+                let mut colors = std::collections::BTreeMap::new();
+                let mut coverage = 0;
+                for sy in y * 4..y * 4 + 4 {
+                    for sx in x * 4..x * 4 + 4 {
+                        let pixel = self.pixels[sy * 36 + sx];
+                        if pixel[3] > 0 {
+                            *colors.entry(pixel).or_insert(0) += 1;
+                            coverage += 1;
+                        }
+                    }
+                }
+                if coverage >= 8 {
+                    // Colour breaks ties consistently on both sides of a face.
+                    result[y * 9 + x] = colors
+                        .into_iter()
+                        .max_by_key(|&(color, count)| (count, color))
+                        .unwrap()
+                        .0;
+                }
+            }
+        }
+        // Sample the v1 eyes and mouth from their original 2×2 regions so
+        // small facial details remain visible. Robots have a higher mouth.
+        let mouth_y = if kind == Kind::Robot { 20 } else { 22 };
+        for (x, y, sx, sy) in [(3, 4, 14, 16), (5, 4, 20, 16), (4, 5, 17, mouth_y)] {
+            let mut sum = [0_u32; 4];
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let pixel = self.pixels[(sy + dy) * 36 + sx + dx];
+                    let alpha = u32::from(pixel[3]);
+                    for i in 0..3 {
+                        sum[i] += u32::from(pixel[i]) * alpha;
+                    }
+                    sum[3] += alpha;
+                }
+            }
+            result[y * 9 + x] = std::array::from_fn(|i| {
+                if i == 3 {
+                    ((sum[3] + 2) / 4) as u8
+                } else {
+                    (sum[i] + sum[3] / 2).checked_div(sum[3]).unwrap_or(0) as u8
+                }
+            });
+        }
+        result
     }
 
     fn rect(&mut self, x: usize, y: usize, w: usize, h: usize, c: Color) {

@@ -156,7 +156,7 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
 }
 
 #[test]
-fn apple_terminal_avatars_use_only_background_cells_and_keep_facial_details() {
+fn apple_terminal_avatars_use_compact_full_portraits_without_glyphs() {
     let display = Display::for_terminal("Apple_Terminal", "xterm-256color", "", false, false);
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../protocol/vectors/01-avatar-pixels.json"
@@ -176,11 +176,11 @@ fn apple_terminal_avatars_use_only_background_cells_and_keep_facial_details() {
         terminal
             .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
             .unwrap();
-        let reference = shum_cli::avatar::render_subject(seed).sampled(18);
-        for y in 0..12 {
-            for x in 0..12 {
-                // Compare to the original grid, without scaling away eyes or mouth.
-                let pixel = reference[(y + 1) * 18 + x + 3];
+        let reference =
+            shum_cli::avatar::render_subject(seed).compact_cells(shum_cli::avatar::kind(seed));
+        for y in 0..9 {
+            for x in 0..9 {
+                let pixel = reference[y * 9 + x];
                 let rgb: [u8; 3] = std::array::from_fn(|i| {
                     ((u32::from(pixel[i]) * u32::from(pixel[3])
                         + [10, 13, 11][i] * (255 - u32::from(pixel[3]))

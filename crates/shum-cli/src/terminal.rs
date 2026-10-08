@@ -216,7 +216,7 @@ pub fn avatar(seed: u64, ascii: bool) {
     let avatar = crate::avatar::render_subject(seed);
     let display = crate::display::Display::detect();
     if display.cell_avatars {
-        for row in avatar.face_cells().chunks(12) {
+        for row in avatar.compact_cells(crate::avatar::kind(seed)).chunks(9) {
             print!("  ");
             for &pixel in row {
                 if pixel[3] == 0 {
