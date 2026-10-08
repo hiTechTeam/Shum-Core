@@ -147,6 +147,10 @@ pub struct Wizard {
     pub file_keys: bool,
 }
 pub fn draw(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures, ascii: bool) {
+    draw_content(frame, wizard, pictures, ascii);
+    pictures.colors.apply(frame.buffer_mut(), ascii);
+}
+fn draw_content(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures, ascii: bool) {
     let area = frame.area();
     let color = |c| if ascii { Color::Reset } else { c };
     let muted = Style::default().fg(color(MUTED));
@@ -167,7 +171,7 @@ pub fn draw(frame: &mut Frame<'_>, wizard: &Wizard, pictures: &mut Pictures, asc
         return;
     }
     frame.render_widget(
-        Paragraph::new("ШУМ · Новый профиль").style(green),
+        Paragraph::new("Shum · Новый профиль").style(green),
         row(1, 1),
     );
     frame.render_widget(

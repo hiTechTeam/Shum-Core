@@ -71,32 +71,62 @@ enum Form {
 
 pub struct Pictures {
     picker: Picker,
+    pub(crate) colors: crate::display::Colors,
     cache: HashMap<(u64, u16, u16), StatefulProtocol>,
 }
 impl Pictures {
     pub fn new(picker: Picker) -> Self {
+        Self::with_colors(picker, crate::display::Display::detect().colors)
+    }
+    pub fn with_colors(picker: Picker, colors: crate::display::Colors) -> Self {
         Self {
             picker,
+            colors,
             cache: HashMap::new(),
         }
     }
+    fn halfblocks(&self) -> bool {
+        self.picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks
+    }
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
+        self.draw_at(frame, seed, area, false);
+    }
+    fn thumbnail(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
+        self.draw_at(frame, seed, area, true);
+    }
+    fn draw_at(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect, thumbnail: bool) {
         if area.is_empty() {
             return;
         }
-        if self.picker.protocol_type() == ratatui_image::picker::ProtocolType::Halfblocks {
+        if self.halfblocks() {
             // The generic image widget interpolates halfblocks and flattens alpha.
             // Pixel subjects need nearest-neighbour samples and terminal background.
             let pixels = crate::avatar::render_subject(seed).pixels;
-            for y in 0..area.height {
-                for x in 0..area.width {
-                    let sx = (u32::from(x) * 36 / u32::from(area.width)).min(35) as usize;
-                    let sy = (u32::from(y) * 36 / u32::from(area.height)).min(35) as usize;
-                    let by = ((u32::from(y) * 2 + 1) * 36 / (u32::from(area.height) * 2)).min(35)
-                        as usize;
+            let side = area.width.min(area.height.saturating_mul(2)) / 2 * 2;
+            let height = side / 2;
+            if height == 0 {
+                return;
+            }
+            let x0 = area.x + (area.width - side) / 2;
+            let y0 = area.y + (area.height - height) / 2;
+            // Text thumbnails show the face at its logical pixel resolution;
+            // shrinking the whole figure erased its eyes and other details.
+            let (source, left, top) = if thumbnail && side >= 12 {
+                (24, 6, 4)
+            } else {
+                (36, 0, 0)
+            };
+            for y in 0..height {
+                for x in 0..side {
+                    let sx = (left + (u32::from(x) * 2 + 1) * source / (u32::from(side) * 2))
+                        .min(35) as usize;
+                    let sy = (top + (u32::from(y) * 4 + 1) * source / (u32::from(height) * 4))
+                        .min(35) as usize;
+                    let by = (top + (u32::from(y) * 4 + 3) * source / (u32::from(height) * 4))
+                        .min(35) as usize;
                     let a = pixels[sy * 36 + sx];
                     let b = pixels[by * 36 + sx];
-                    let cell = &mut frame.buffer_mut()[(area.x + x, area.y + y)];
+                    let cell = &mut frame.buffer_mut()[(x0 + x, y0 + y)];
                     let rgb = |p: [u8; 4]| Color::Rgb(p[0], p[1], p[2]);
                     match (a[3] > 0, b[3] > 0) {
                         (true, true) => {
@@ -226,6 +256,16 @@ pub fn draw(
     pictures: &mut Pictures,
     ascii: bool,
 ) {
+    draw_content(frame, snapshot, view, pictures, ascii);
+    pictures.colors.apply(frame.buffer_mut(), ascii);
+}
+fn draw_content(
+    frame: &mut Frame<'_>,
+    snapshot: &Value,
+    view: &mut View,
+    pictures: &mut Pictures,
+    ascii: bool,
+) {
     let area = frame.area();
     if area.width < 35 || area.height < 12 {
         frame.render_widget(
@@ -255,7 +295,7 @@ pub fn draw(
     let nearby = all.iter().filter(|c| c["nearby"] == true).count();
     frame.render_widget(
         Paragraph::new(format!(
-            " ШУМ  {}   релеев {relay}   рядом {nearby}   {}",
+            " Shum  {}   релеев {relay}   рядом {nearby}   {}",
             safe(text(&snapshot["card"]["name"])),
             chrono::Local::now().format("%H:%M")
         ))
@@ -314,7 +354,13 @@ pub fn draw(
         );
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
-        let row_height = if ascii { 2 } else { 3 };
+        let row_height = if ascii {
+            2
+        } else if pictures.halfblocks() {
+            6
+        } else {
+            3
+        };
         let visible = usize::from(inner.height / row_height).max(1);
         let start = view.selected.saturating_sub(visible - 1);
         for (index, c) in listed.iter().enumerate().skip(start).take(visible) {
@@ -331,10 +377,15 @@ pub fn draw(
                 Style::default()
             };
             frame.render_widget(Paragraph::new("").style(row_style), row);
-            let inset = if ascii { 2 } else { 7 };
+            let avatar_width = if pictures.halfblocks() { 12 } else { 6 };
+            let inset = if ascii { 2 } else { avatar_width + 1 };
             if !ascii {
                 if let Some(seed) = c["card"]["avatarSeed"].as_u64() {
-                    pictures.draw(frame, seed, Rect::new(row.x, row.y, 6, row.height));
+                    pictures.thumbnail(
+                        frame,
+                        seed,
+                        Rect::new(row.x, row.y, avatar_width, row.height),
+                    );
                 }
             }
             let name = format!(
@@ -387,7 +438,7 @@ pub fn draw(
         frame.render_widget(border("", ascii), chat_area);
         let compact = ascii || chat_area.height < 19;
         let lines = if compact {
-            vec![Line::from("SHUM"), Line::from("")]
+            vec![Line::from("Shum"), Line::from("")]
         } else {
             LOGO.iter()
                 .map(|line| {
@@ -447,18 +498,31 @@ pub fn draw(
         let block = border(&title, ascii);
         let inner = block.inner(parts[0]);
         frame.render_widget(block, parts[0]);
-        let header_height = if ascii { 2 } else { 4 }.min(inner.height.saturating_sub(1));
+        let header_height = if ascii {
+            2
+        } else if pictures.halfblocks() && inner.height >= 18 {
+            9
+        } else {
+            4
+        }
+        .min(inner.height.saturating_sub(1));
+        let avatar_width = header_height * 2;
         if let Some(card) = card {
             if !ascii {
                 if let Some(seed) = card["card"]["avatarSeed"].as_u64() {
                     pictures.draw(
                         frame,
                         seed,
-                        Rect::new(inner.x, inner.y, 8.min(inner.width), header_height),
+                        Rect::new(
+                            inner.x,
+                            inner.y,
+                            avatar_width.min(inner.width),
+                            header_height,
+                        ),
                     );
                 }
             }
-            let x = if ascii { 0 } else { 9 };
+            let x = if ascii { 0 } else { avatar_width + 1 };
             let phase = if card["typing"] == true {
                 "печатает…"
             } else if card["phase"] == "incomingPending" {
@@ -644,19 +708,29 @@ pub fn draw(
         }
     }
     if let Some(profiles) = &view.profiles {
-        let popup = centered(area, 52, (profiles.len() as u16 * 4 + 10).min(area.height));
+        let row_height = if !ascii && pictures.halfblocks() {
+            6
+        } else {
+            3
+        };
+        let stride = row_height + 1;
+        let popup = centered(
+            area,
+            52,
+            ((profiles.len() as u16 + 1) * stride + 5).min(area.height),
+        );
         frame.render_widget(Clear, popup);
         let block = border(" Профили ", ascii).border_style(style);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let visible = usize::from(inner.height.saturating_sub(3) / 4).max(1);
+        let visible = usize::from(inner.height.saturating_sub(3) / stride).max(1);
         let start = view.profile_selected.saturating_sub(visible - 1);
         for i in start..=(profiles.len()).min(start + visible - 1) {
             let row = Rect::new(
                 inner.x + 1,
-                inner.y + 1 + ((i - start) * 4) as u16,
+                inner.y + 1 + (i - start) as u16 * stride,
                 inner.width.saturating_sub(2),
-                3.min(inner.height.saturating_sub(2)),
+                row_height.min(inner.height.saturating_sub(2)),
             );
             let selected = view.profile_selected == i;
             let rowstyle = if selected && !ascii {
@@ -673,7 +747,11 @@ pub fn draw(
                 };
                 if !ascii {
                     if let Some(seed) = detail.and_then(|d| d["card"]["avatarSeed"].as_u64()) {
-                        pictures.draw(frame, seed, Rect::new(row.x, row.y, 6, row.height));
+                        pictures.thumbnail(
+                            frame,
+                            seed,
+                            Rect::new(row.x, row.y, row_height * 2, row.height),
+                        );
                     }
                 }
                 format!(
@@ -698,7 +776,7 @@ pub fn draw(
             } else {
                 "+ Создать новый профиль".into()
             };
-            let inset = if ascii { 0 } else { 7 };
+            let inset = if ascii { 0 } else { row_height * 2 + 1 };
             frame.render_widget(
                 Paragraph::new(label).style(rowstyle.fg(if selected {
                     accent
@@ -803,18 +881,9 @@ impl Drop for TerminalGuard {
 pub(crate) fn picture_picker(ascii: bool) -> Picker {
     // Querying stdin here consumed early keystrokes in terminals without replies.
     // Use known graphics protocols; other terminals get transparent halfblocks.
-    use ratatui_image::picker::ProtocolType;
     let mut picker = Picker::halfblocks();
     if !ascii {
-        let term = std::env::var("TERM").unwrap_or_default();
-        let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-        if term.contains("kitty") || std::env::var_os("KITTY_WINDOW_ID").is_some() {
-            picker.set_protocol_type(ProtocolType::Kitty);
-        } else if matches!(program.as_str(), "iTerm.app" | "WezTerm") {
-            picker.set_protocol_type(ProtocolType::Iterm2);
-        } else if std::env::var_os("WT_SESSION").is_some() {
-            picker.set_protocol_type(ProtocolType::Sixel);
-        }
+        picker.set_protocol_type(crate::display::Display::detect().images);
     }
     picker
 }

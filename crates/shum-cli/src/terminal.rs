@@ -134,6 +134,7 @@ pub fn avatar(seed: u64, ascii: bool) {
     }
     let avatar = crate::avatar::render_subject(seed);
     let pixels = avatar.coarse18();
+    let colors = crate::display::Display::detect().colors;
     for y in (0..18).step_by(2) {
         print!("  ");
         for x in 0..18 {
@@ -141,12 +142,9 @@ pub fn avatar(seed: u64, ascii: bool) {
             let bottom = pixels[(y + 1) * 18 + x];
             match (top[3] > 0, bottom[3] > 0) {
                 (false, false) => print!("\x1b[0m "),
-                (true, false) => print!("\x1b[0;38;2;{};{};{}m▀", top[0], top[1], top[2]),
-                (false, true) => print!("\x1b[0;38;2;{};{};{}m▄", bottom[0], bottom[1], bottom[2]),
-                (true, true) => print!(
-                    "\x1b[38;2;{};{};{};48;2;{};{};{}m▀",
-                    top[0], top[1], top[2], bottom[0], bottom[1], bottom[2]
-                ),
+                (true, false) => print!("\x1b[0m{}▀", colors.sgr(top, false)),
+                (false, true) => print!("\x1b[0m{}▄", colors.sgr(bottom, false)),
+                (true, true) => print!("{}{}▀", colors.sgr(top, false), colors.sgr(bottom, true)),
             }
         }
         println!("\x1b[0m");
@@ -157,17 +155,10 @@ fn native_avatar(seed: u64) -> Result<bool> {
         picker::{Picker, ProtocolType},
         Image, Resize,
     };
-    let term = std::env::var("TERM").unwrap_or_default();
-    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    let protocol = if term.contains("kitty") || std::env::var_os("KITTY_WINDOW_ID").is_some() {
-        ProtocolType::Kitty
-    } else if matches!(program.as_str(), "iTerm.app" | "WezTerm") {
-        ProtocolType::Iterm2
-    } else if std::env::var_os("WT_SESSION").is_some() {
-        ProtocolType::Sixel
-    } else {
+    let protocol = crate::display::Display::detect().images;
+    if protocol == ProtocolType::Halfblocks {
         return Ok(false);
-    };
+    }
     let mut picker = Picker::halfblocks();
     picker.set_protocol_type(protocol);
     let pixels = crate::avatar::render_subject(seed)
