@@ -155,13 +155,25 @@ cargo install --path crates/shum-cli --locked
 ```
 
 На этом Mac установленный бинарник доступен по `~/.cargo/bin/shum`.
-Чтобы пользоваться короткой командой в текущем терминале:
+Чтобы команды `shum`, `shum chats` и остальные находились в новых вкладках
+Terminal и Warp, добавьте в `~/.zshrc`:
 
 ```sh
-export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH"
-shum init
-shum
+if [[ -d "$HOME/.cargo/bin" && ":$PATH:" != *":$HOME/.cargo/bin:"* ]]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
 ```
+
+Затем откройте новую вкладку терминала. Для уже открытой вкладки достаточно:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+rehash
+shum chats
+```
+
+`zsh: command not found: shum` означает, что shell не нашёл бинарник в PATH.
+Проверить путь можно командой `command -v shum`.
 
 Можно обойтись без изменения PATH:
 
