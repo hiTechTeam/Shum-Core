@@ -44,6 +44,48 @@ pub struct OpenProfile {
     pub profile: Profile,
     pub keys: ProfileKeys,
     pub store: Store,
+    root: PathBuf,
+}
+impl OpenProfile {
+    pub fn check_name(&self, name: &str) -> Result<()> {
+        let profiles = Profiles::new(&self.root)?;
+        let _lock = profiles.lock()?;
+        let registry = profiles.read()?;
+        if name.is_empty()
+            || name.len() > 64
+            || name.trim() != name
+            || name.chars().any(char::is_control)
+            || registry
+                .profiles
+                .iter()
+                .any(|p| p.id != self.profile.id && (p.name == name || p.id == name))
+        {
+            return Err(Error::ProfileName);
+        }
+        Ok(())
+    }
+    /// The encrypted card is authoritative; opening the profile reconciles a
+    /// crash between committing that card and updating this public label.
+    pub fn refresh_name(&mut self) -> Result<()> {
+        let Some(name) = self.store.state()["ownProfileCard"]["name"].as_str() else {
+            return Ok(());
+        };
+        if name == self.profile.name {
+            return Ok(());
+        }
+        let profiles = Profiles::new(&self.root)?;
+        let _lock = profiles.lock()?;
+        let mut registry = profiles.read()?;
+        let profile = registry
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == self.profile.id)
+            .ok_or(Error::ProfileNotFound)?;
+        profile.name = name.into();
+        profiles.write(&registry)?;
+        self.profile.name = name.into();
+        Ok(())
+    }
 }
 
 fn private_directory(path: &Path) -> Result<()> {
@@ -83,13 +125,22 @@ impl Profiles {
             return Err(Error::Permissions);
         }
         let file = private_options().create(true).truncate(false).open(path)?;
-        file.try_lock_exclusive().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                Error::Locked
-            } else {
-                e.into()
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(Error::Locked)
+                }
+                Err(error) => return Err(error.into()),
             }
-        })?;
+        }
         Ok(file)
     }
     fn read(&self) -> Result<Registry> {
@@ -243,6 +294,7 @@ impl Profiles {
             profile,
             keys,
             store,
+            root: self.root.clone(),
         })
     }
     /// Explicit delete intent. A durable tombstone makes interrupted deletion

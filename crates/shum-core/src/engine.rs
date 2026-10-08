@@ -137,12 +137,17 @@ impl Engine {
         let envelope = Envelope::seal(
             self.inbox.own.clone(),
             peer,
-            plaintext,
+            plaintext.clone(),
             c.keys.noise,
             c.keys.signing,
             ephemeral,
         )?;
         self.outbox.enqueue(envelope)?;
+        self.outbox
+            .messages
+            .last_mut()
+            .expect("enqueued message")
+            .plaintext = Some(plaintext);
         Ok(self.tick(c.routes, c.now))
     }
     pub fn invitation(

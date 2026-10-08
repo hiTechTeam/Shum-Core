@@ -2,7 +2,7 @@
 //! returned actions. Neither this module nor an action performs I/O.
 use crate::{
     card::Card,
-    packet::{Envelope, Packet, ProfileSync, Receipt},
+    packet::{Envelope, Packet, Plaintext, ProfileSync, Receipt},
     rules::{ble_delay_ms, nostr_delay_ms, profile_delay_ms, Delivery, DeliveryState},
     Error, Result,
 };
@@ -118,6 +118,8 @@ impl Retry {
 #[derive(Clone, Debug)]
 pub struct Outgoing {
     pub envelope: Envelope,
+    /// Local history only; never included in transport packets.
+    pub plaintext: Option<Plaintext>,
     pub delivery: DeliveryState,
     pub retry: Retry,
     pub offered: HashSet<String>,
@@ -187,6 +189,7 @@ impl Outbox {
         }
         self.messages.push(Outgoing {
             envelope,
+            plaintext: None,
             delivery: DeliveryState::default(),
             retry: Retry::default(),
             offered: HashSet::new(),

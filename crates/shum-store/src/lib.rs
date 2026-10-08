@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod codec;
+pub mod engine;
 mod layout;
 pub mod profiles;
 mod sqlite;
@@ -42,4 +43,6 @@ pub enum Error {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Core(#[from] shum_core::Error),
 }
