@@ -3582,6 +3582,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "shum-core",
  "shum-store",
  "shum-transport-ble",

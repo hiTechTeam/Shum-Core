@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 pub mod avatar;
 pub mod ipc;
+pub mod onboarding;
 pub mod runtime;
 pub mod service;
 pub mod terminal;

@@ -60,3 +60,188 @@ fn tui_renders_chats_avatars_and_empty_state_in_small_terminals() {
         }
     }
 }
+
+fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+}
+#[test]
+fn keyboard_modes_keep_shortcuts_reachable_without_corrupting_messages() {
+    use crossterm::event::{KeyCode as K, KeyModifiers as M};
+    use shum_cli::ui::{handle_key, Action};
+    let mut view = View::default();
+    let data = example();
+    for c in ['x', 'ы', 'e', 't'] {
+        handle_key(&mut view, &data, key(K::Char(c))).unwrap();
+    }
+    assert!(
+        view.input.is_empty(),
+        "navigation must not create invisible input"
+    );
+    for c in ['i', 'ш'] {
+        assert!(matches!(
+            handle_key(&mut view, &data, key(K::Char(c))).unwrap(),
+            Action::Qr
+        ));
+    }
+    for c in ['q', 'й'] {
+        assert!(matches!(
+            handle_key(&mut view, &data, key(K::Char(c))).unwrap(),
+            Action::Quit
+        ));
+    }
+    handle_key(&mut view, &data, key(K::Enter)).unwrap();
+    for c in "qiйшаф123".chars() {
+        handle_key(&mut view, &data, key(K::Char(c))).unwrap();
+    }
+    assert_eq!(view.input, "qiйшаф123");
+    handle_key(&mut view, &data, key(K::Esc)).unwrap();
+    assert!(matches!(
+        handle_key(&mut view, &data, key(K::Char('i'))).unwrap(),
+        Action::Qr
+    ));
+    assert_eq!(view.input, "qiйшаф123", "Esc preserves an unsent draft");
+    for modal in [0, 1, 2] {
+        view.help = modal == 0;
+        view.qr = if modal == 1 {
+            Some("test".into())
+        } else {
+            None
+        };
+        view.profiles = if modal == 2 { Some(vec![]) } else { None };
+        for code in [K::Char('c'), K::Char('q'), K::Char('с'), K::F(10)] {
+            assert!(matches!(
+                handle_key(
+                    &mut view,
+                    &data,
+                    crossterm::event::KeyEvent::new(code, M::CONTROL)
+                )
+                .unwrap(),
+                Action::Quit
+            ));
+        }
+    }
+}
+#[test]
+fn slash_commands_respect_arguments_and_reject_typos() {
+    use crossterm::event::KeyCode;
+    use shum_cli::{
+        runtime::Request,
+        ui::{handle_key, Action},
+    };
+    let mut view = View::chat("anna");
+    let data = example();
+    for input in ["/quit", "/exit", "/q"] {
+        view.input = input.into();
+        assert!(matches!(
+            handle_key(&mut view, &data, key(KeyCode::Enter)).unwrap(),
+            Action::Quit
+        ));
+    }
+    view.input = "/invite Игорь".into();
+    assert!(
+        matches!(handle_key(&mut view,&data,key(KeyCode::Enter)).unwrap(),Action::Request(Request::Invite{contact}) if contact=="Игорь")
+    );
+    view.input = "/send \"Игорь Загоев\" \"Привет, мир!\"".into();
+    assert!(
+        matches!(handle_key(&mut view,&data,key(KeyCode::Enter)).unwrap(),Action::Request(Request::Send{contact,text}) if contact=="Игорь Загоев" && text=="Привет, мир!")
+    );
+    for input in [
+        "/add",
+        "/accept anna extra",
+        "/invite a b",
+        "/profile avatar --seed nope",
+        "/react id none",
+        "/typo",
+    ] {
+        view.input = input.into();
+        assert!(
+            handle_key(&mut view, &data, key(KeyCode::Enter)).is_err(),
+            "{input}"
+        );
+    }
+    view.input = "/profile".into();
+    assert!(matches!(
+        handle_key(&mut view, &data, key(KeyCode::Enter)).unwrap(),
+        Action::Info(..)
+    ));
+}
+#[test]
+fn wizard_empty_screen_and_profiles_render_without_clipping_at_supported_sizes() {
+    use shum_cli::onboarding::{Step, Wizard};
+    let mut pictures = Pictures::new(Picker::halfblocks());
+    for (w, h) in [(35, 12), (40, 18), (80, 32), (140, 45)] {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        for step in [Step::Name, Step::Avatar, Step::Saving, Step::Done] {
+            let wizard = Wizard {
+                step,
+                name: "Игорь Загоев".into(),
+                seed: 42,
+                error: String::new(),
+                file_keys: true,
+            };
+            terminal
+                .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
+                .unwrap();
+            if w == 80 {
+                save_screen(
+                    &terminal,
+                    match step {
+                        Step::Name => "init",
+                        Step::Avatar => "avatar",
+                        Step::Saving => "saving",
+                        Step::Done => "done",
+                    },
+                );
+            }
+        }
+        let empty =
+            json!({"profile":{"id":"local"},"card":{"name":"Игорь Загоев","avatarSeed":42}});
+        let mut view = View::default();
+        terminal
+            .draw(|f| draw(f, &empty, &mut view, &mut pictures, false))
+            .unwrap();
+        if w == 80 {
+            save_screen(&terminal, "empty");
+        }
+        view.profiles = Some(vec![shum_store::profiles::Profile {
+            id: "local".into(),
+            name: "Игорь Загоев".into(),
+            owner_id: "id".into(),
+            key_backend: shum_store::vault::KeyBackend::File,
+            deleting: false,
+        }]);
+        terminal
+            .draw(|f| draw(f, &empty, &mut view, &mut pictures, false))
+            .unwrap();
+        if w == 80 {
+            save_screen(&terminal, "profiles");
+            let s = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(s.contains("Создать новый профиль"));
+        }
+    }
+}
+fn save_screen(terminal: &Terminal<TestBackend>, name: &str) {
+    if let Ok(dir) = std::env::var("SHUM_TEST_SCREENS") {
+        let buffer = terminal.backend().buffer();
+        let cells = buffer
+            .content
+            .iter()
+            .map(|c| json!({"s":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg)}))
+            .collect::<Vec<_>>();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join(format!("{name}.json")),
+            serde_json::to_vec(
+                &json!({"width":buffer.area.width,"height":buffer.area.height,"cells":cells}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}

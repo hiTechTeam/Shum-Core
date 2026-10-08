@@ -263,6 +263,22 @@ async fn actual_cli_invitation_messages_receipts_profile_and_restart() {
     })
     .await;
     wait(&root, aid, |s| s["messages"][2]["status"] == "delivered").await;
+    command(&root, Some(bid), &["daemon", "--stop"]);
+    command(&root, Some(aid), &["send", bowner, "Отменить"]);
+    let pending = wait(&root, aid, |s| {
+        s["messages"].as_array().is_some_and(|m| m.len() == 4)
+    })
+    .await;
+    command(
+        &root,
+        Some(aid),
+        &["cancel", pending["messages"][3]["id"].as_str().unwrap()],
+    );
+    assert!(snapshot(&root, aid).await["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|m| m["id"] != pending["messages"][3]["id"]));
     command(&root, Some(aid), &["clear", bowner, "--confirm"]);
     assert!(snapshot(&root, aid).await["messages"]
         .as_array()
@@ -285,4 +301,164 @@ async fn actual_cli_invitation_messages_receipts_profile_and_restart() {
     command(&root, Some(aid), &["unlock"]);
     command(&root, Some(aid), &["daemon", "--stop"]);
     server.abort();
+}
+
+fn rejected(root: &Path, profile: &str, args: &[&str]) -> Value {
+    let result = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(root)
+        .args(["--json", "-p", profile])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(!result.status.success(), "unexpected success: {args:?}");
+    let value: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert!(value["error"].is_string() || value["success"] == false);
+    value
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn command_filters_decline_block_cancel_profile_and_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("profiles");
+    let (url, relay) = relay().await;
+    let a = command(
+        &root,
+        None,
+        &[
+            "--relay",
+            &url,
+            "--push-url",
+            "off",
+            "init",
+            "--name",
+            "A",
+            "--headless",
+        ],
+    );
+    let b = command(
+        &root,
+        None,
+        &[
+            "--relay",
+            &url,
+            "--push-url",
+            "off",
+            "init",
+            "--name",
+            "B",
+            "--headless",
+        ],
+    );
+    let aid = a["profile"]["id"].as_str().unwrap();
+    let bid = b["profile"]["id"].as_str().unwrap();
+    let da = daemon(&root, aid);
+    let db = daemon(&root, bid);
+    wait(&root, aid, |s| !s["relays"].as_array().unwrap().is_empty()).await;
+    wait(&root, bid, |s| !s["relays"].as_array().unwrap().is_empty()).await;
+    command(
+        &root,
+        Some(aid),
+        &["add", b["invitation"].as_str().unwrap()],
+    );
+    command(
+        &root,
+        Some(bid),
+        &["add", a["invitation"].as_str().unwrap()],
+    );
+    assert_eq!(
+        command(&root, Some(aid), &["contacts"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(command(&root, Some(aid), &["invite"])["link"]
+        .as_str()
+        .unwrap()
+        .starts_with("shum://c4/"));
+    assert!(
+        command(&root, Some(aid), &["keys", "verify", "B", "--qr"])["iosFingerprint"].is_string()
+    );
+    for args in [&["status"][..], &["about"], &["profile"], &["daemon"]] {
+        assert!(command(&root, Some(aid), args)["card"].is_object());
+    }
+    for args in [
+        &["chats", "--nearby"][..],
+        &["chats", "--unread"],
+        &["chats", "--invites"],
+    ] {
+        assert!(command(&root, Some(aid), args)["contacts"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    for args in [
+        &["add"][..],
+        &["add", "not-a-link"],
+        &["profile", "avatar"],
+        &["profile", "avatar", "--photo", "missing.png"],
+        &["profile", "name", "B"],
+        &["send", "B", "not yet accepted"],
+        &["keys", "verify", "Missing"],
+        &["clear", "B"],
+        &["react", "missing", "invalid"],
+    ] {
+        rejected(&root, aid, args);
+    }
+    command(&root, Some(aid), &["profile", "bio", "О себе"]);
+    command(&root, Some(aid), &["profile", "avatar", "--random"]);
+    assert_eq!(
+        command(&root, Some(aid), &["profile"])["card"]["bio"],
+        "О себе"
+    );
+    command(&root, None, &["profile", "use", "A"]);
+    assert_eq!(command(&root, None, &["profile", "list"])["selected"], aid);
+    command(&root, Some(aid), &["invite", "B"]);
+    wait(&root, bid, |s| {
+        s["contacts"][0]["phase"] == "incomingPending"
+    })
+    .await;
+    assert_eq!(
+        command(&root, Some(bid), &["chats", "--invites"])["contacts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    command(&root, Some(bid), &["decline", "A"]);
+    wait(&root, aid, |s| {
+        s["contacts"][0]["phase"] == "declinedByPeer"
+    })
+    .await;
+    command(&root, Some(bid), &["block", "A"]);
+    assert!(command(&root, Some(bid), &["contacts"])
+        .as_array()
+        .unwrap()
+        .is_empty());
+    command(&root, Some(bid), &["block", "A", "--undo"]);
+    assert_eq!(
+        command(&root, Some(bid), &["contacts"])
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // A local decline cannot immediately initiate a new invitation in v1.
+    rejected(&root, bid, &["invite", "A"]);
+    command(&root, Some(bid), &["daemon", "--stop"]);
+    command(&root, Some(aid), &["daemon", "--stop"]);
+    drop(da);
+    drop(db);
+    rejected(
+        &root,
+        aid,
+        &["profile", "delete", "A", "--confirm", "wrong"],
+    );
+    command(&root, None, &["profile", "delete", "A", "--confirm", "A"]);
+    command(&root, None, &["profile", "delete", "B", "--confirm", "B"]);
+    assert!(command(&root, None, &["profile", "list"])["profiles"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    relay.abort();
 }

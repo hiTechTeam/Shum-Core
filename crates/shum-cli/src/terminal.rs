@@ -199,12 +199,18 @@ pub fn profile(snapshot: &Value, ascii: bool) {
     if let Some(seed) = card["avatarSeed"].as_u64() {
         avatar(seed, ascii);
     }
-    println!(
-        "  {}\n  Shum ID  {}\n  Nostr    {}",
-        safe(text(&card["name"])),
-        text(&snapshot["profile"]["ownerId"]),
-        text(&card["nostrKey"])
-    );
+    let contacts = snapshot["contacts"].as_array().map_or(0, Vec::len);
+    let chats = snapshot["contacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["phase"] == "accepted")
+        .count();
+    let fingerprint = serde_json::from_value::<shum_core::card::Card>(card.clone())
+        .ok()
+        .map(|c| fingerprint(&c))
+        .unwrap_or_default();
+    println!("  {} · текущий\n  {}\n\n  Чаты       {chats}\n  Контакты   {contacts}\n  Аватар     пиксельный (для всех)\n  Фото       требует Bluetooth\n\n  Отпечаток  {fingerprint}\n  Shum ID    {}", safe(text(&card["name"])), safe(text(&card["bio"])),text(&snapshot["profile"]["ownerId"]));
 }
 pub fn chats(snapshot: &Value, nearby: bool, invites: bool, unread: bool, ascii: bool) {
     let contacts = snapshot["contacts"]

@@ -211,6 +211,15 @@ impl Profiles {
         self.write(&r)
     }
     pub fn create(&self, name: &str, mode: KeyMode) -> Result<Profile> {
+        self.create_with_keys(name, mode, ProfileKeys::generate()?)
+    }
+    /// Publish keys prepared by an interactive client only after confirmation.
+    pub fn create_with_keys(
+        &self,
+        name: &str,
+        mode: KeyMode,
+        keys: ProfileKeys,
+    ) -> Result<Profile> {
         if name.is_empty()
             || name.len() > 128
             || name.trim() != name
@@ -228,7 +237,6 @@ impl Profiles {
         let id = hex::encode(random);
         let directory = self.root.join(&id);
         let backend = mode.backend()?;
-        let keys = ProfileKeys::generate()?;
         // create_dir is exclusive; never claim or remove an existing directory.
         #[cfg(unix)]
         {

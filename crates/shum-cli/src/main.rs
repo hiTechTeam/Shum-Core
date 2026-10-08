@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use shum_cli::{
-    ipc,
+    ipc, onboarding,
     runtime::{self, Request},
     terminal, ui,
 };
@@ -18,7 +18,7 @@ use std::{
     name = "shum",
     version,
     about = "Мессенджер без номера телефона",
-    after_help = "Без команды открывается TUI. Первый запуск: shum init."
+    after_help = "Без команды открываются чаты. При первом запуске Shum предложит создать профиль."
 )]
 struct Args {
     #[arg(short = 'p', long, global = true)]
@@ -211,62 +211,61 @@ async fn main() -> std::process::ExitCode {
 async fn run(args: Args) -> Result<()> {
     let root = root(&args)?;
     let profiles = Profiles::new(&root)?;
-    if let Some(Commands::Init { name, headless }) = &args.command {
-        let name = match name.clone().or_else(|| args.profile.clone()) {
-            Some(name) => name,
-            None if io::stdin().is_terminal() => terminal::prompt("Как вас зовут? ")?,
-            None => bail!("Укажите shum init --name <имя>"),
-        };
-        if name.is_empty()
-            || name.len() > 64
-            || name.trim() != name
-            || name.chars().any(char::is_control)
-        {
-            bail!("Имя: от 1 до 64 байт UTF-8, без пробелов по краям и управляющих символов");
-        }
-        if !args.relay.is_empty() {
-            shum_transport_nostr::RelayPool::validate_urls(&args.relay)?;
-        }
-        if let Some(url) = args.push_url.as_deref().filter(|url| *url != "off") {
-            shum_transport_nostr::push::PushClient::new(url)?;
-        }
-        let p = profiles.create(
-            &name,
-            if *headless {
-                KeyMode::File
-            } else {
-                KeyMode::Auto
-            },
-        )?;
-        let mut open = profiles.open(Some(&p.id))?;
-        let card = Card::create(
-            &open.keys.noise,
-            &open.keys.signing,
-            &open.keys.nostr,
-            name.clone(),
-            "",
-            None,
-            1,
-        )?;
-        let relays = if args.relay.is_empty() {
-            shum_transport_nostr::DEFAULT_RELAYS
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
+    let settings = onboarding::Settings {
+        relays: if args.relay.is_empty() {
+            onboarding::Settings::default().relays
         } else {
             args.relay.clone()
+        },
+        push_url: match args.push_url.as_deref() {
+            Some("off") => None,
+            Some(url) => Some(url.into()),
+            None => onboarding::Settings::default().push_url,
+        },
+    };
+    if let Some(Commands::Init { name, headless }) = &args.command {
+        let mode = if *headless {
+            KeyMode::File
+        } else {
+            KeyMode::Auto
         };
-        open.store.transaction(|s| {
-            s["ownProfileCard"] = serde_json::to_value(&card)?;
-            s["cliSettings"] = json!({"relays":relays,"pushURL":args.push_url.as_deref().filter(|value|*value!="off").or_else(||if args.push_url.as_deref()==Some("off"){None}else{Some("https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net")})});
-            Ok(())
-        })?;
-        drop(open);
-        profiles.select(&p.id)?;
+        let name = name.as_ref().or(args.profile.as_ref());
+        let created = if let Some(name) = name {
+            onboarding::create(
+                &root,
+                name,
+                None,
+                mode,
+                &settings,
+                shum_store::vault::ProfileKeys::generate()?,
+            )?
+        } else if io::stdin().is_terminal() && io::stdout().is_terminal() && !args.json {
+            let Some(created) = onboarding::run(&root, args.ascii, mode, settings).await? else {
+                return Ok(());
+            };
+            created
+        } else {
+            bail!("Укажите shum init --name <имя>");
+        };
         if !args.json {
-            terminal::avatar(card.avatar_seed.unwrap_or(0), args.ascii);
+            terminal::avatar(created.card.avatar_seed.unwrap_or(0), args.ascii);
         }
-        return output(json!({"profile":p,"card":card,"invitation":card.invitation()?}),args.json,&format!("Профиль {} создан.\nShum ID: {}\n\nshum invite    мой QR\nshum add <ссылка>\nshum           открыть интерфейс",terminal::safe(&name),card.id()));
+        return output(
+            onboarding::json(&created)?,
+            args.json,
+            &onboarding::completion(&created),
+        );
+    }
+    if matches!(args.command, None | Some(Commands::Ui { .. }))
+        && profiles.list()?.1.is_empty()
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && !args.json
+        && onboarding::run(&root, args.ascii, KeyMode::Auto, settings)
+            .await?
+            .is_none()
+    {
+        return Ok(());
     }
     if let Some(Commands::Profile {
         command: Some(ProfileCommand::List),
@@ -277,6 +276,13 @@ async fn run(args: Args) -> Result<()> {
             return output(json!({"selected":selected,"profiles":list}), true, "");
         }
         for p in list {
+            if !args.ascii {
+                if let Some(detail) = ui::profile_preview(&root, &p.id).await {
+                    if let Some(seed) = detail["card"]["avatarSeed"].as_u64() {
+                        terminal::avatar(seed, false);
+                    }
+                }
+            }
             println!(
                 "{} {}",
                 if selected.as_deref() == Some(&p.id) {
@@ -350,6 +356,7 @@ async fn run(args: Args) -> Result<()> {
         return output(json!({"stopped":true}), args.json, "Служба остановлена");
     }
     if let Some(Commands::Daemon { install: true, .. }) = &args.command {
+        ipc::stop(&root, &profile.id).await?;
         shum_cli::service::install(&root, &profile.id)?;
         return output(
             json!({"installed":true}),

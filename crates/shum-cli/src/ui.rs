@@ -4,7 +4,7 @@ use crate::{
     terminal::{safe, text, trim_width},
 };
 use anyhow::{bail, Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
@@ -45,6 +45,10 @@ pub struct View {
     pub tab: usize,
     pub scroll: u16,
     pub composing: bool,
+    pub command_mode: bool,
+    pub help: bool,
+    pub info: Option<(String, String)>,
+    pub profile_details: HashMap<String, Value>,
     pub qr: Option<String>,
     pub profiles: Option<Vec<shum_store::profiles::Profile>>,
     pub profile_selected: usize,
@@ -61,7 +65,6 @@ impl View {
     }
 }
 enum Form {
-    NewProfile,
     DeleteProfile { id: String, name: String },
     ClearChat(String),
 }
@@ -77,7 +80,7 @@ impl Pictures {
             cache: HashMap::new(),
         }
     }
-    fn draw(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
+    pub(crate) fn draw(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
         if area.is_empty() {
             return;
         }
@@ -178,11 +181,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn border(title: &str, ascii: bool) -> Block<'_> {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(if ascii {
-            BorderType::Plain
-        } else {
-            BorderType::Rounded
-        })
+        .border_type(BorderType::Plain)
         .title(title);
     if ascii {
         block.border_set(ratatui::symbols::border::Set {
@@ -235,6 +234,12 @@ pub fn draw(
         );
         return;
     }
+    if !ascii {
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(Color::Rgb(10, 13, 11))),
+            area,
+        );
+    }
     let accent = if ascii { Color::Reset } else { GREEN };
     let muted = if ascii { Color::Reset } else { MUTED };
     let style = Style::default().fg(accent);
@@ -242,7 +247,7 @@ pub fn draw(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(6),
-        Constraint::Length(2),
+        Constraint::Length(if view.command_mode { 5 } else { 2 }),
     ])
     .split(area);
     let relay = snapshot["relays"].as_array().map_or(0, Vec::len);
@@ -268,9 +273,13 @@ pub fn draw(
         .enumerate()
         .map(|(i, label)| {
             Span::styled(
-                format!(" {}:{} {} ", i + 1, label, counts[i]),
+                format!(" {} {} ", label, counts[i]),
                 if i == view.tab {
-                    style
+                    if ascii {
+                        style
+                    } else {
+                        style.bg(Color::Rgb(20, 48, 29))
+                    }
                 } else {
                     Style::default().fg(muted)
                 },
@@ -375,7 +384,7 @@ pub fn draw(
                 .map(|line| {
                     Line::from(Span::styled(
                         line.replace('#', "██").replace('.', "  "),
-                        style,
+                        Style::default().fg(Color::Rgb(93, 245, 138)),
                     ))
                 })
                 .collect::<Vec<_>>()
@@ -383,16 +392,37 @@ pub fn draw(
         let mut lines = lines;
         lines.extend([
             Line::from(""),
-            Line::from("Пока нет открытого чата"),
-            Line::from("i мой QR · a добавить контакт"),
-            Line::from("Ctrl+P профили · /help команды"),
+            Line::from(if full_empty {
+                "Пока нет чатов"
+            } else {
+                "Выберите чат слева"
+            }),
+            Line::from(Span::styled(
+                if full_empty {
+                    "Позовите кого-нибудь, и переписка появится здесь"
+                } else {
+                    "Enter открыть · ↑↓ выбрать"
+                },
+                Style::default().fg(muted),
+            )),
+            Line::from(""),
+            Line::from("i     показать мой QR-код"),
+            Line::from("a     добавить по ссылке или QR"),
+            Line::from("^p    выбрать или создать профиль"),
+            Line::from(""),
+            Line::from(Span::styled(
+                "или в терминале: shum invite · shum add <ссылка>",
+                Style::default().fg(muted),
+            )),
         ]);
         frame.render_widget(
-            Paragraph::new(lines).alignment(Alignment::Center),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .alignment(Alignment::Center),
             centered(
                 chat_area,
                 chat_area.width.saturating_sub(2),
-                if compact { 7 } else { 17 },
+                if compact { 11 } else { 21 },
             ),
         );
     } else if let Some(id) = &view.opened {
@@ -421,7 +451,7 @@ pub fn draw(
             } else if card["phase"] == "incomingPending" {
                 "/accept принять · /decline отклонить"
             } else if card["phase"] != "accepted" {
-                "/invite пригласить в чат"
+                "/invite <ник> пригласить"
             } else if card["online"] == true {
                 "в чате"
             } else {
@@ -501,8 +531,21 @@ pub fn draw(
             .saturating_sub(view.scroll as usize)
             .min(u16::MAX as usize) as u16;
         frame.render_widget(paragraph.scroll((offset, 0)), history);
-        let input = Paragraph::new(view.input.as_str()).block(
-            border("Сообщение или /команда", ascii).border_style(if view.composing {
+        let input = Paragraph::new(if view.command_mode {
+            ""
+        } else {
+            view.input.as_str()
+        })
+        .block(
+            border(
+                if view.composing {
+                    "Сообщение · Enter отправить · Esc к списку"
+                } else {
+                    "Сообщение · Tab ввод"
+                },
+                ascii,
+            )
+            .border_style(if view.composing {
                 style
             } else {
                 Style::default()
@@ -517,59 +560,156 @@ pub fn draw(
             )),
             parts[1],
         );
-        if view.composing && view.profiles.is_none() && view.qr.is_none() && view.form.is_none() {
+        if view.composing
+            && !view.command_mode
+            && view.profiles.is_none()
+            && view.qr.is_none()
+            && view.form.is_none()
+        {
             frame.set_cursor_position((
                 parts[1].x + 1 + input_width.min(width) as u16,
                 parts[1].y + 1,
             ));
         }
     }
-    let status = if view.input.starts_with('/') && view.opened.is_none() {
-        &view.input
-    } else if view.status.is_empty() {
+    let footer = vertical[3];
+    let footer_parts = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(footer);
+    if view.command_mode {
+        let width = footer_parts[0].width.saturating_sub(3) as usize;
+        let input_width = unicode_width::UnicodeWidthStr::width(view.input.as_str());
+        frame.render_widget(
+            Paragraph::new(view.input.as_str())
+                .scroll((0, input_width.saturating_sub(width) as u16))
+                .block(border("Команда · /help список · Esc отменить", ascii).border_style(style)),
+            footer_parts[0],
+        );
+        if view.form.is_none() && view.qr.is_none() && !view.help {
+            frame.set_cursor_position((
+                footer_parts[0].x + 1 + input_width.min(width) as u16,
+                footer_parts[0].y + 1,
+            ));
+        }
+    }
+    let status = if view.status.is_empty() {
         text(&snapshot["error"])
     } else {
         &view.status
     };
-    frame.render_widget(Paragraph::new(format!("{}\nEnter открыть/отправить · Tab панель · Esc назад · ^P профили · ^N рядом · q выход",safe(status))),vertical[3]);
+    let hint = if view.composing || view.command_mode {
+        "Enter отправить · Esc к списку · ^P профили · ^Q выход"
+    } else if area.width < 60 {
+        "i QR · a добавить · ^P профили · q выход"
+    } else if full_empty {
+        "i мой QR · a добавить · ^N рядом · ^P профили · / команды · q выход"
+    } else {
+        "↑↓ чаты · Enter открыть · Tab ввод · / команды · ^P профили · q выход"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(safe(status)),
+            Line::from(Span::styled(hint, Style::default().fg(muted))),
+        ]),
+        footer_parts[1],
+    );
+    if view.profiles.is_some() || view.help || view.info.is_some() {
+        for cell in &mut frame.buffer_mut().content {
+            cell.set_fg(if ascii {
+                Color::Reset
+            } else {
+                Color::Rgb(54, 64, 57)
+            });
+        }
+    }
     if let Some(profiles) = &view.profiles {
-        let popup = centered(area, 52, (profiles.len() as u16 * 2 + 7).min(area.height));
+        let popup = centered(area, 52, (profiles.len() as u16 * 4 + 10).min(area.height));
         frame.render_widget(Clear, popup);
-        let block = border("Профили", ascii).border_style(style);
+        let block = border(" Профили ", ascii).border_style(style);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let mut lines = profiles
-            .iter()
-            .enumerate()
-            .flat_map(|(i, p)| {
-                [
-                    Line::from(Span::styled(
-                        format!(
-                            "{} {}{}",
-                            if view.profile_selected == i { ">" } else { " " },
-                            safe(&p.name),
-                            if p.id == snapshot["profile"]["id"] {
-                                "  текущий"
-                            } else {
-                                ""
-                            }
-                        ),
-                        if view.profile_selected == i {
-                            style
-                        } else {
-                            Style::default()
-                        },
-                    )),
-                    Line::from(""),
-                ]
-            })
-            .collect::<Vec<_>>();
-        lines.push(Line::from(Span::styled(
-            "n создать · d удалить · Enter выбрать",
-            style,
-        )));
-        lines.push(Line::from("Esc закрыть"));
-        frame.render_widget(Paragraph::new(lines), inner);
+        let visible = usize::from(inner.height.saturating_sub(3) / 4).max(1);
+        let start = view.profile_selected.saturating_sub(visible - 1);
+        for i in start..=(profiles.len()).min(start + visible - 1) {
+            let row = Rect::new(
+                inner.x + 1,
+                inner.y + 1 + ((i - start) * 4) as u16,
+                inner.width.saturating_sub(2),
+                3.min(inner.height.saturating_sub(2)),
+            );
+            let selected = view.profile_selected == i;
+            let rowstyle = if selected && !ascii {
+                Style::default().bg(Color::Rgb(20, 48, 29))
+            } else {
+                Style::default()
+            };
+            frame.render_widget(Paragraph::new("").style(rowstyle), row);
+            let label = if let Some(p) = profiles.get(i) {
+                let detail = if p.id == snapshot["profile"]["id"] {
+                    Some(snapshot)
+                } else {
+                    view.profile_details.get(&p.id)
+                };
+                if !ascii {
+                    if let Some(seed) = detail.and_then(|d| d["card"]["avatarSeed"].as_u64()) {
+                        pictures.draw(frame, seed, Rect::new(row.x, row.y, 6, row.height));
+                    }
+                }
+                format!(
+                    "{}{}{}",
+                    if selected && ascii { "> " } else { "" },
+                    safe(&p.name),
+                    if p.id == snapshot["profile"]["id"] {
+                        "  текущий".into()
+                    } else {
+                        detail
+                            .map(|d| {
+                                format!(
+                                    "  {} чатов",
+                                    d["chatCount"]
+                                        .as_u64()
+                                        .unwrap_or_else(|| contacts(d, 0).len() as u64)
+                                )
+                            })
+                            .unwrap_or_default()
+                    }
+                )
+            } else {
+                "+ Создать новый профиль".into()
+            };
+            let inset = if ascii { 0 } else { 7 };
+            frame.render_widget(
+                Paragraph::new(label).style(rowstyle.fg(if selected {
+                    accent
+                } else {
+                    Color::Reset
+                })),
+                Rect::new(row.x + inset, row.y + 1, row.width.saturating_sub(inset), 1),
+            );
+        }
+        frame.render_widget(
+            Paragraph::new("Enter выбрать · d удалить · Esc закрыть")
+                .style(Style::default().fg(muted)),
+            Rect::new(
+                inner.x + 1,
+                inner.bottom().saturating_sub(1),
+                inner.width.saturating_sub(2),
+                1,
+            ),
+        );
+    }
+    if view.help || view.info.is_some() {
+        let (title, body) = view
+            .info
+            .as_ref()
+            .map(|(t, b)| (t.as_str(), b.as_str()))
+            .unwrap_or(("Команды в Shum", HELP));
+        let popup = centered(area, 76, 26);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(body)
+                .wrap(Wrap { trim: false })
+                .block(border(title, ascii).border_style(style)),
+            popup,
+        );
     }
     if let Some(link) = &view.qr {
         if ascii {
@@ -608,7 +748,6 @@ pub fn draw(
     }
     if let Some(form) = &view.form {
         let title = match form {
-            Form::NewProfile => "Имя нового профиля",
             Form::DeleteProfile { .. } => "Введите имя удаляемого профиля",
             Form::ClearChat(_) => "Очистить чат здесь? Введите да",
         };
@@ -616,8 +755,9 @@ pub fn draw(
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(format!(
-                "{}\n\nEnter подтвердить · Esc отменить",
-                safe(&view.input)
+                "{}\n{}\nEnter подтвердить · Esc отменить",
+                safe(&view.input),
+                safe(&view.status)
             ))
             .block(border(title, ascii).border_style(style)),
             popup,
@@ -625,62 +765,381 @@ pub fn draw(
     }
 }
 
-async fn focus(root: &Path, profile: &str, contact: Option<String>) {
-    let _ = ipc::request(root, profile, Request::Focus { contact }).await;
+/// Restore the terminal on every return path, including errors in a modal.
+pub(crate) struct TerminalGuard;
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            event::DisableMouseCapture,
+            event::DisableBracketedPaste
+        );
+        ratatui::restore();
+    }
 }
-async fn form_submit(root: &Path, profile: &mut String, view: &mut View) -> Result<bool> {
-    match view.form.as_ref().context("Нет формы")? {
-        Form::NewProfile => {
-            let output = tokio::process::Command::new(std::env::current_exe()?)
-                .arg("--data-dir")
-                .arg(root)
-                .args(["--json", "init", "--name", view.input.trim()])
-                .output()
-                .await?;
-            let value: Value = serde_json::from_slice(&output.stdout)?;
-            if !output.status.success() {
-                bail!("{}", text(&value["error"]));
-            }
-            focus(root, profile, None).await;
-            *profile = text(&value["profile"]["id"]).into();
-            ipc::ensure(root, profile).await?;
-            view.opened = None;
-        }
-        Form::DeleteProfile { id, name } => {
-            if view.input != *name {
-                bail!("Введите точное имя: {}", safe(name));
-            }
-            ipc::stop(root, id).await?;
-            let profiles = shum_store::profiles::Profiles::new(root)?;
-            profiles.delete(id)?;
-            if id == profile {
-                let (selected, _) = profiles.list()?;
-                let Some(next) = selected else {
-                    return Ok(true);
-                };
-                *profile = next;
-                ipc::ensure(root, profile).await?;
-                view.opened = None;
-            }
-        }
-        Form::ClearChat(contact) => {
-            if view.input != "да" {
-                bail!("Для очистки введите да");
-            }
-            ipc::request(
-                root,
-                profile,
-                Request::Clear {
-                    contact: contact.clone(),
-                },
-            )
-            .await?;
+pub(crate) fn picture_picker(ascii: bool) -> Picker {
+    // Querying stdin here consumed early keystrokes in terminals without replies.
+    // Use known graphics protocols; other terminals get transparent halfblocks.
+    use ratatui_image::picker::ProtocolType;
+    let mut picker = Picker::halfblocks();
+    if !ascii {
+        let term = std::env::var("TERM").unwrap_or_default();
+        let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+        if term.contains("kitty") || std::env::var_os("KITTY_WINDOW_ID").is_some() {
+            picker.set_protocol_type(ProtocolType::Kitty);
+        } else if matches!(program.as_str(), "iTerm.app" | "WezTerm") {
+            picker.set_protocol_type(ProtocolType::Iterm2);
+        } else if std::env::var_os("WT_SESSION").is_some() {
+            picker.set_protocol_type(ProtocolType::Sixel);
         }
     }
-    view.form = None;
-    view.profiles = None;
+    picker
+}
+pub fn is_quit_key(key: KeyEvent) -> bool {
+    key.code == KeyCode::F(10)
+        || (key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'q' | 'с' | 'й')))
+}
+fn shortcut(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char(c) => KeyCode::Char(match c {
+            'й' => 'q',
+            'ш' => 'i',
+            'ф' => 'a',
+            'о' => 'j',
+            'л' => 'k',
+            'з' => 'p',
+            'т' => 'n',
+            'в' => 'd',
+            _ => c,
+        }),
+        _ => code,
+    }
+}
+pub enum Action {
+    None,
+    Quit,
+    Qr,
+    Profiles,
+    NewProfile,
+    Switch(String),
+    Delete(String),
+    Request(Request),
+    Open(String),
+    Tab(usize),
+    Help,
+    Info(String, String),
+}
+fn open_contact(view: &mut View, id: String) {
+    view.opened = Some(id);
+    view.composing = true;
+    view.command_mode = false;
     view.input.clear();
-    Ok(false)
+    view.scroll = 0;
+}
+/// Navigation never writes into the editor. Text shortcuts are active only outside editors.
+pub fn handle_key(view: &mut View, snapshot: &Value, key: KeyEvent) -> Result<Action> {
+    if key.kind != event::KeyEventKind::Press {
+        return Ok(Action::None);
+    }
+    if is_quit_key(key) {
+        return Ok(Action::Quit);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Ok(match shortcut(key.code) {
+            KeyCode::Char('p') => Action::Profiles,
+            KeyCode::Char('n') => Action::Tab(1),
+            _ => Action::None,
+        });
+    }
+    if view.qr.is_some() || view.help || view.info.is_some() {
+        if matches!(
+            shortcut(key.code),
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')
+        ) {
+            view.qr = None;
+            view.help = false;
+            view.info = None;
+        }
+        return Ok(Action::None);
+    }
+    if let Some(form) = view.form.as_ref() {
+        match key.code {
+            KeyCode::Esc => {
+                view.form = None;
+                view.input.clear();
+            }
+            KeyCode::Enter => match form {
+                Form::DeleteProfile { id, name } => {
+                    if view.input != *name {
+                        bail!("Введите точное имя: {}", safe(name));
+                    }
+                    return Ok(Action::Delete(id.clone()));
+                }
+                Form::ClearChat(id) => {
+                    if view.input != "да" {
+                        bail!("Для очистки введите да");
+                    }
+                    return Ok(Action::Request(Request::Clear {
+                        contact: id.clone(),
+                    }));
+                }
+            },
+            KeyCode::Backspace => {
+                view.input.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() && view.input.len() + c.len_utf8() <= 128 => {
+                view.input.push(c)
+            }
+            _ => {}
+        }
+        return Ok(Action::None);
+    }
+    if let Some(profiles) = view.profiles.as_ref() {
+        match shortcut(key.code) {
+            KeyCode::Esc | KeyCode::Char('q') => view.profiles = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                view.profile_selected = view.profile_selected.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.profile_selected = (view.profile_selected + 1).min(profiles.len())
+            }
+            KeyCode::Char('n') => return Ok(Action::NewProfile),
+            KeyCode::Char('d') => {
+                if let Some(p) = profiles.get(view.profile_selected) {
+                    view.form = Some(Form::DeleteProfile {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                    });
+                    view.input.clear();
+                }
+            }
+            KeyCode::Enter => {
+                return Ok(profiles
+                    .get(view.profile_selected)
+                    .map(|p| Action::Switch(p.id.clone()))
+                    .unwrap_or(Action::NewProfile))
+            }
+            _ => {}
+        }
+        return Ok(Action::None);
+    }
+    let editing = view.composing || view.command_mode;
+    match key.code {
+        KeyCode::Esc => {
+            if view.command_mode {
+                view.command_mode = false;
+                view.input.clear();
+            } else {
+                view.composing = false;
+            }
+            view.status.clear();
+        }
+        KeyCode::Tab => {
+            if view.command_mode {
+                view.command_mode = false;
+                view.input.clear();
+            } else if view.opened.is_some() {
+                view.composing = !view.composing;
+            } else {
+                view.tab = (view.tab + 1) % 4;
+                view.selected = 0;
+            }
+        }
+        KeyCode::PageUp => view.scroll = view.scroll.saturating_add(10),
+        KeyCode::PageDown => view.scroll = view.scroll.saturating_sub(10),
+        KeyCode::Enter if editing && !view.input.is_empty() => {
+            return parse_command(&view.input, view.opened.as_deref(), snapshot);
+        }
+        KeyCode::Enter => {
+            if let Some(c) = contacts(snapshot, view.tab).get(view.selected) {
+                open_contact(view, text(&c["id"]).into());
+            }
+        }
+        KeyCode::Backspace if editing => {
+            view.input.pop();
+        }
+        KeyCode::Char(c)
+            if editing
+                && !c.is_control()
+                && !key.modifiers.contains(KeyModifiers::ALT)
+                && view.input.len() + c.len_utf8() <= 4096 =>
+        {
+            view.input.push(c)
+        }
+        _ if !editing => match shortcut(key.code) {
+            KeyCode::Char('q') => return Ok(Action::Quit),
+            KeyCode::Char('i') => return Ok(Action::Qr),
+            KeyCode::Char('a') => {
+                view.input = "/add ".into();
+                view.command_mode = true;
+            }
+            KeyCode::Char('/' | '?') => {
+                view.input = "/".into();
+                view.command_mode = true;
+            }
+            KeyCode::Char(c @ '1'..='4') => return Ok(Action::Tab((c as u8 - b'1') as usize)),
+            KeyCode::Up | KeyCode::Char('k') => view.selected = view.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                view.selected =
+                    (view.selected + 1).min(contacts(snapshot, view.tab).len().saturating_sub(1))
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+    Ok(Action::None)
+}
+fn parse_command(input: &str, current: Option<&str>, snapshot: &Value) -> Result<Action> {
+    if !input.starts_with('/') {
+        return Ok(Action::Request(Request::Send {
+            contact: current.context("Сначала выберите чат")?.into(),
+            text: input.into(),
+        }));
+    }
+    let words = shlex::split(input).context("Незакрытые кавычки")?;
+    let args = words.iter().map(String::as_str).collect::<Vec<_>>();
+    let contact = |arg: Option<&&str>| -> Result<String> {
+        arg.copied()
+            .or(current)
+            .map(str::to_owned)
+            .context("Укажите контакт или откройте чат")
+    };
+    let req=match args.as_slice() {
+        ["/"|"/help"]=>return Ok(Action::Help),
+        ["/q"|"/quit"|"/exit"]=>return Ok(Action::Quit),
+        ["/invite"]=>return Ok(Action::Qr),
+        ["/invite",who]=>Request::Invite{contact:(*who).into()},
+        ["/accept",..] if args.len()<=2=>Request::Accept{contact:contact(args.get(1))?},
+        ["/decline",..] if args.len()<=2=>Request::Decline{contact:contact(args.get(1))?},
+        ["/read",..] if args.len()<=2=>Request::Read{contact:contact(args.get(1))?},
+        ["/clear",..] if args.len()<=2=>Request::Clear{contact:contact(args.get(1))?},
+        ["/add",link]=>Request::Add{link:(*link).into()},
+        ["/add","--image",path]=>Request::Add{link:crate::terminal::decode_qr(Path::new(path))?},
+        ["/open",who]=>return Ok(Action::Open(text(&find_contact(snapshot,who)?["id"]).into())),
+        ["/send",who,body @ ..] if !body.is_empty()=>Request::Send{contact:(*who).into(),text:body.join(" ")},
+        ["/block",who]=>Request::Block{contact:(*who).into(),blocked:true},
+        ["/block",who,"--undo"]=>Request::Block{contact:(*who).into(),blocked:false},
+        ["/cancel",message]=>Request::Cancel{message:(*message).into()},
+        ["/react",message,reaction]=>Request::Reaction{message:(*message).into(),reaction:serde_json::from_value(Value::String((*reaction).into())).context("Реакция: heart like dislike laugh fire coffin hundred horror")?},
+        ["/profile","name",name @ ..] if !name.is_empty()=>Request::Profile{name:Some(name.join(" ")),bio:None,seed:None},
+        ["/profile","bio",bio @ ..]=>Request::Profile{name:None,bio:Some(bio.join(" ")),seed:None},
+        ["/profile","avatar","--random"]=>{let mut bytes=[0;8];getrandom::fill(&mut bytes)?;Request::Profile{name:None,bio:None,seed:Some(u64::from_le_bytes(bytes))}},
+        ["/profile","avatar","--seed",seed]=>Request::Profile{name:None,bio:None,seed:Some(seed.parse().context("Семя должно быть целым числом")?)},
+        ["/profile"]=>return Ok(Action::Info("Профиль".into(),format!("{}\n{}\n\nShum ID: {}\n\n/profile name <имя>\n/profile bio <текст>\n/profile avatar --random\nCtrl+P: выбрать или создать профиль",safe(text(&snapshot["card"]["name"])),safe(text(&snapshot["card"]["bio"])),text(&snapshot["profile"]["ownerId"])))),
+        ["/profile","list"]=>return Ok(Action::Profiles),
+        ["/chats"|"/contacts"]=>return Ok(Action::Tab(0)),
+        ["/chats","--nearby"]|["/nearby"]=>return Ok(Action::Tab(1)),
+        ["/chats","--invites"]=>return Ok(Action::Tab(2)),
+        ["/chats","--unread"]=>return Ok(Action::Tab(3)),
+        ["/status"|"/about"]=>return Ok(Action::Info("Shum".into(),format!("Версия {} · протокол v1\nПрофиль: {}\nРелеев подключено: {}\nBluetooth: пока не реализован\n{}",env!("CARGO_PKG_VERSION"),safe(text(&snapshot["card"]["name"])),snapshot["relays"].as_array().map_or(0,Vec::len),safe(text(&snapshot["error"]))))),
+        ["/keys","verify",who]=>{let c:shum_core::card::Card=serde_json::from_value(find_contact(snapshot,who)?["card"].clone())?;return Ok(Action::Info("Сверка ключей".into(),format!("{}\n\nОтпечаток как в iPhone: {}\n\nShum ID: {}",safe(&c.name),crate::terminal::fingerprint(&c),c.id())));},
+        _=>bail!("Команда или аргументы не распознаны. /help: список и примеры"),
+    };
+    Ok(Action::Request(req))
+}
+fn invitation(snapshot: &Value, size: ratatui::layout::Size) -> Result<String> {
+    let card: shum_core::card::Card = serde_json::from_value(snapshot["card"].clone())?;
+    let link = card.invitation()?;
+    let qr = crate::terminal::qr(&link, false)?;
+    if qr.lines().count() + 4 <= size.height as usize
+        && qr.lines().next().map_or(0, |s| s.chars().count() + 4) <= size.width as usize
+    {
+        return Ok(link);
+    }
+    use base64::Engine;
+    Ok(format!(
+        "shum://c2/{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hex::decode(&card.nostr_key)?)
+    ))
+}
+struct Pending {
+    task: tokio::task::JoinHandle<Result<Option<String>>>,
+    input: String,
+}
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+struct Feed(tokio::task::JoinHandle<()>);
+impl Drop for Feed {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+#[derive(Clone, PartialEq, Default)]
+struct Activity {
+    contact: Option<String>,
+    typing: bool,
+}
+fn feed(
+    root: &Path,
+    profile: &str,
+) -> (
+    Feed,
+    tokio::sync::watch::Receiver<Option<Value>>,
+    tokio::sync::watch::Sender<Activity>,
+) {
+    let root = root.to_owned();
+    let profile = profile.to_owned();
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let (activity, mut changes) = tokio::sync::watch::channel(Activity::default());
+    let job = tokio::spawn(async move {
+        let mut previous = Activity::default();
+        let mut heartbeat = Instant::now() - Duration::from_secs(30);
+        loop {
+            let current = changes.borrow_and_update().clone();
+            let update = async {
+                if current.contact != previous.contact {
+                    let _ = ipc::request(
+                        &root,
+                        &profile,
+                        Request::Focus {
+                            contact: current.contact.clone(),
+                        },
+                    )
+                    .await;
+                }
+                if let Some(id) = &current.contact {
+                    if heartbeat.elapsed() > Duration::from_secs(4) || current != previous {
+                        let _ = ipc::request(
+                            &root,
+                            &profile,
+                            Request::Typing {
+                                contact: id.clone(),
+                                active: current.typing,
+                            },
+                        )
+                        .await;
+                        let _ = ipc::request(
+                            &root,
+                            &profile,
+                            Request::Presence {
+                                contact: id.clone(),
+                                online: true,
+                            },
+                        )
+                        .await;
+                        heartbeat = Instant::now();
+                    }
+                }
+                let value = ipc::request(&root, &profile, Request::Snapshot).await?;
+                Ok::<_, anyhow::Error>(value)
+            };
+            match tokio::time::timeout(Duration::from_secs(2), update).await {
+                Ok(Ok(value)) => {
+                    previous = current;
+                    let _ = tx.send(Some(value));
+                }
+                _ => {
+                    let _ = tx.send(None);
+                }
+            }
+            tokio::select! {_=tokio::time::sleep(Duration::from_millis(250))=>{},result=changes.changed()=>{if result.is_err(){break;}}}
+        }
+    });
+    (Feed(job), rx, activity)
 }
 pub async fn run(
     root: &Path,
@@ -689,45 +1148,57 @@ pub async fn run(
     ascii: bool,
 ) -> Result<()> {
     let mut profile = initial_profile.to_owned();
-    ipc::ensure(root, &profile).await?;
     let mut snapshot = ipc::request(root, &profile, Request::Snapshot).await?;
-    let mut view = View {
-        opened: contact
-            .map(|s| find_contact(&snapshot, s).map(|c| text(&c["id"]).to_owned()))
-            .transpose()?,
-        composing: contact.is_some(),
-        ..View::default()
-    };
-    let mut terminal = ratatui::init();
-    let mut pictures = Pictures::new(if ascii {
-        Picker::halfblocks()
-    } else {
-        Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
-    });
-    let mut typing = Instant::now() - Duration::from_secs(10);
-    let mut presence = Instant::now() - Duration::from_secs(30);
-    let mut typed = false;
-    let result = run_loop(
-        root,
-        &mut profile,
-        &mut snapshot,
-        &mut view,
-        &mut pictures,
-        &mut terminal,
-        ascii,
-        &mut typing,
-        &mut presence,
-        &mut typed,
-    )
-    .await;
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        event::DisableMouseCapture,
-        event::DisableBracketedPaste
-    );
-    ratatui::restore();
-    focus(root, &profile, None).await;
-    result
+    let mut view = View::default();
+    if let Some(contact) = contact {
+        open_contact(
+            &mut view,
+            text(&find_contact(&snapshot, contact)?["id"]).into(),
+        );
+    }
+    loop {
+        let mut terminal = ratatui::init();
+        let guard = TerminalGuard;
+        let mut pictures = Pictures::new(picture_picker(ascii));
+        crossterm::execute!(
+            std::io::stdout(),
+            event::EnableMouseCapture,
+            event::EnableBracketedPaste
+        )?;
+        let result = run_loop(
+            root,
+            &mut profile,
+            &mut snapshot,
+            &mut view,
+            &mut pictures,
+            &mut terminal,
+            ascii,
+        )
+        .await;
+        drop(guard);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(300),
+            ipc::request(root, &profile, Request::Focus { contact: None }),
+        )
+        .await;
+        if !result? {
+            return Ok(());
+        }
+        let mode = if snapshot["profile"]["keyBackend"] == "file" {
+            shum_store::vault::KeyMode::File
+        } else {
+            shum_store::vault::KeyMode::Auto
+        };
+        if let Some(created) =
+            crate::onboarding::run(root, ascii, mode, crate::onboarding::Settings::default())
+                .await?
+        {
+            profile = created.profile.id;
+            ipc::ensure(root, &profile).await?;
+            snapshot = ipc::request(root, &profile, Request::Snapshot).await?;
+        }
+        view = View::default();
+    }
 }
 #[allow(clippy::too_many_arguments)]
 async fn run_loop(
@@ -738,301 +1209,282 @@ async fn run_loop(
     pictures: &mut Pictures,
     terminal: &mut ratatui::DefaultTerminal,
     ascii: bool,
-    typing: &mut Instant,
-    presence: &mut Instant,
-    typed: &mut bool,
-) -> Result<()> {
-    crossterm::execute!(
-        std::io::stdout(),
-        event::EnableMouseCapture,
-        event::EnableBracketedPaste
-    )?;
+) -> Result<bool> {
+    let (mut worker, mut updates, mut activity) = feed(root, profile);
+    let mut pending: Option<Pending> = None;
+    let mut previews = tokio::task::JoinSet::new();
     loop {
-        terminal.draw(|frame| draw(frame, snapshot, view, pictures, ascii))?;
-        if event::poll(Duration::from_millis(150))? {
-            let event = event::read()?;
-            if let Event::Key(key) = event {
-                if key.kind != event::KeyEventKind::Press {
-                    continue;
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key.code {
-                        KeyCode::Char('c') => break,
-                        KeyCode::Char('p') => {
-                            view.profiles = if view.profiles.is_some() {
-                                None
-                            } else {
-                                Some(shum_store::profiles::Profiles::new(root)?.list()?.1)
-                            };
-                            continue;
-                        }
-                        KeyCode::Char('n') => {
-                            view.tab = 1;
-                            view.composing = false;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                if view.qr.is_some() {
-                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                        view.qr = None;
-                    }
-                    continue;
-                }
-                if view.form.is_some() {
-                    match key.code {
-                        KeyCode::Esc => {
-                            view.form = None;
-                            view.input.clear();
-                        }
-                        KeyCode::Enter => match form_submit(root, profile, view).await {
-                            Ok(true) => break,
-                            Ok(false) => {}
-                            Err(error) => view.status = error.to_string(),
-                        },
-                        KeyCode::Backspace => {
-                            view.input.pop();
-                        }
-                        KeyCode::Char(c) if !c.is_control() && view.input.len() < 128 => {
-                            view.input.push(c)
-                        }
-                        _ => {}
-                    }
-                    *snapshot = ipc::request(root, profile, Request::Snapshot).await?;
-                    continue;
-                }
-                if let Some(profiles) = view.profiles.as_ref() {
-                    match key.code {
-                        KeyCode::Esc => view.profiles = None,
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            view.profile_selected = view.profile_selected.saturating_sub(1)
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            view.profile_selected =
-                                (view.profile_selected + 1).min(profiles.len().saturating_sub(1))
-                        }
-                        KeyCode::Char('n') => {
-                            view.form = Some(Form::NewProfile);
-                            view.input.clear();
-                        }
-                        KeyCode::Char('d') => {
-                            if let Some(p) = profiles.get(view.profile_selected) {
-                                view.form = Some(Form::DeleteProfile {
-                                    id: p.id.clone(),
-                                    name: p.name.clone(),
-                                });
-                                view.input.clear();
-                            }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(p) = profiles.get(view.profile_selected) {
-                                focus(root, profile, None).await;
-                                *profile = p.id.clone();
-                                shum_store::profiles::Profiles::new(root)?.select(profile)?;
-                                ipc::ensure(root, profile).await?;
-                                *snapshot = ipc::request(root, profile, Request::Snapshot).await?;
-                                view.opened = None;
-                                view.input.clear();
-                            }
-                            view.profiles = None;
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                let listed = contacts(snapshot, view.tab);
-                match key.code {
-                    KeyCode::Char('q') if !view.composing && view.input.is_empty() => break,
-                    KeyCode::Esc => {
-                        view.opened = None;
-                        view.composing = false;
-                        view.input.clear();
-                        view.scroll = 0;
-                    }
-                    KeyCode::Tab => {
-                        if view.opened.is_some() {
-                            view.composing = !view.composing;
-                        } else {
-                            view.tab = (view.tab + 1) % 4;
-                            view.selected = 0;
-                        }
-                    }
-                    KeyCode::Char(c @ '1'..='4') if !view.composing && view.input.is_empty() => {
-                        view.tab = (c as u8 - b'1') as usize;
-                        view.selected = 0;
-                    }
-                    KeyCode::Up => view.selected = view.selected.saturating_sub(1),
-                    KeyCode::Down => {
-                        view.selected = (view.selected + 1).min(listed.len().saturating_sub(1))
-                    }
-                    KeyCode::Char('j') if !view.composing && view.input.is_empty() => {
-                        view.selected = (view.selected + 1).min(listed.len().saturating_sub(1))
-                    }
-                    KeyCode::Char('k') if !view.composing && view.input.is_empty() => {
-                        view.selected = view.selected.saturating_sub(1)
-                    }
-                    KeyCode::PageUp => view.scroll = view.scroll.saturating_add(10),
-                    KeyCode::PageDown => view.scroll = view.scroll.saturating_sub(10),
-                    KeyCode::Char('a') if !view.composing && view.input.is_empty() => {
-                        view.input = "/add ".into()
-                    }
-                    KeyCode::Char('i') if !view.composing && view.input.is_empty() => {
-                        let card: shum_core::card::Card =
-                            serde_json::from_value(snapshot["card"].clone())?;
-                        let link = card.invitation()?;
-                        let qr = crate::terminal::qr(&link, false)?;
-                        // c2 is an existing v1 format and fits a small terminal; the daemon answers it.
-                        let size = terminal.size()?;
-                        view.qr = Some(
-                            if qr.lines().count() + 4 <= size.height as usize
-                                && qr.lines().next().map_or(0, |s| s.chars().count() + 4)
-                                    <= size.width as usize
-                            {
-                                link
-                            } else {
-                                use base64::Engine;
-                                format!(
-                                    "shum://c2/{}",
-                                    base64::engine::general_purpose::URL_SAFE_NO_PAD
-                                        .encode(hex::decode(&card.nostr_key)?)
-                                )
-                            },
-                        );
-                    }
-                    KeyCode::Enter => {
-                        if view.input.is_empty() {
-                            if let Some(c) = listed.get(view.selected) {
-                                view.opened = Some(text(&c["id"]).into());
-                                view.composing = true;
-                                view.scroll = 0;
-                            }
-                        } else if view.input == "/clear" {
-                            if let Some(id) = &view.opened {
-                                view.form = Some(Form::ClearChat(id.clone()));
-                                view.input.clear();
-                            }
-                        } else {
-                            match parse_input(&view.input,view.opened.as_deref()){
-                            Ok(Some(request))=>match ipc::request(root,profile,request).await{Ok(_)=>{view.status="Сохранено".into();view.input.clear();view.scroll=0;},Err(error)=>view.status=error.to_string()},
-                            Ok(None)=>view.status="/add ссылка · /invite · /accept · /decline · /clear · /react ID реакция · /profile имя".into(),Err(error)=>view.status=error.to_string()
-                        }
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        view.input.pop();
-                    }
-                    KeyCode::Char(c) if !c.is_control() && view.input.len() < 4096 => {
-                        view.input.push(c);
-                    }
-                    _ => {}
-                }
+        while let Some(Ok((id, Some(detail)))) = previews.try_join_next() {
+            view.profile_details.insert(id, detail);
+        }
+        if updates.has_changed().unwrap_or(false) {
+            if let Some(value) = updates.borrow_and_update().clone() {
+                *snapshot = value;
             } else {
-                match event {
-                    Event::Paste(value) => {
-                        let clean = safe(&value);
-                        for c in clean.chars() {
-                            if view.input.len() + c.len_utf8() > 4096 {
+                view.status = "Служба не отвечает. Ctrl+C или F10: выход".into();
+            }
+        }
+        if pending.as_ref().is_some_and(|job| job.task.is_finished()) {
+            let mut job = pending.take().unwrap();
+            match (&mut job.task).await? {
+                Ok(next) => {
+                    if let Some(id) = next {
+                        if id.is_empty() {
+                            return Ok(false);
+                        }
+                        *profile = id;
+                        view.opened = None;
+                        view.selected = 0;
+                        (worker, updates, activity) = feed(root, profile);
+                        *snapshot = Value::Null;
+                    }
+                    if view.input == job.input {
+                        view.input.clear();
+                        view.command_mode = false;
+                    }
+                    view.form = None;
+                    view.profiles = None;
+                    view.scroll = 0;
+                    view.status = "Готово".into();
+                }
+                Err(error) => view.status = error.to_string(),
+            }
+        }
+        terminal.draw(|f| draw(f, snapshot, view, pictures, ascii))?;
+        let action = if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) => handle_key(view, snapshot, key),
+                Event::Paste(value) => {
+                    if view.composing || view.command_mode || view.form.is_some() {
+                        let limit = if view.form.is_some() { 128 } else { 4096 };
+                        for c in safe(&value).chars() {
+                            if view.input.len() + c.len_utf8() > limit {
                                 break;
                             }
                             view.input.push(c);
                         }
                     }
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => view.scroll = view.scroll.saturating_add(3),
-                        MouseEventKind::ScrollDown => view.scroll = view.scroll.saturating_sub(3),
-                        MouseEventKind::Down(event::MouseButton::Left) => {
-                            if let Some((_, id)) = view
-                                .chat_rows
-                                .iter()
-                                .find(|(r, _)| r.contains((mouse.column, mouse.row).into()))
-                            {
-                                view.opened = Some(id.clone());
-                                view.composing = true;
-                                view.scroll = 0;
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                    Ok(Action::None)
                 }
-            }
-        }
-        focus(root, profile, view.opened.clone()).await;
-        if let Some(contact) = &view.opened {
-            if presence.elapsed() > Duration::from_secs(25) {
-                let _ = ipc::request(
-                    root,
-                    profile,
-                    Request::Presence {
-                        contact: contact.clone(),
-                        online: true,
-                    },
-                )
-                .await;
-                *presence = Instant::now();
-            }
-            let active = view.composing && !view.input.is_empty() && !view.input.starts_with('/');
-            if active != *typed || (active && typing.elapsed() > Duration::from_secs(4)) {
-                let _ = ipc::request(
-                    root,
-                    profile,
-                    Request::Typing {
-                        contact: contact.clone(),
-                        active,
-                    },
-                )
-                .await;
-                *typing = Instant::now();
-                *typed = active;
+                Event::Mouse(mouse) => {
+                    if view.profiles.is_none()
+                        && view.form.is_none()
+                        && view.qr.is_none()
+                        && !view.help
+                        && view.info.is_none()
+                    {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => view.scroll = view.scroll.saturating_add(3),
+                            MouseEventKind::ScrollDown => {
+                                view.scroll = view.scroll.saturating_sub(3)
+                            }
+                            MouseEventKind::Down(event::MouseButton::Left) => {
+                                if let Some((_, id)) = view
+                                    .chat_rows
+                                    .iter()
+                                    .find(|(r, _)| r.contains((mouse.column, mouse.row).into()))
+                                {
+                                    open_contact(view, id.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(Action::None)
+                }
+                _ => Ok(Action::None),
             }
         } else {
-            *typed = false;
-        }
-        match ipc::request(root, profile, Request::Snapshot).await {
-            Ok(next) => *snapshot = next,
+            Ok(Action::None)
+        };
+        let action = match action {
+            Ok(action) => action,
             Err(error) => {
                 view.status = error.to_string();
+                Action::None
+            }
+        };
+        match action {
+            Action::Quit => return Ok(false),
+            Action::NewProfile if pending.is_none() => return Ok(true),
+            Action::None | Action::NewProfile => {}
+            Action::Qr => match invitation(snapshot, terminal.size()?) {
+                Ok(link) => {
+                    view.qr = Some(link);
+                    if view.command_mode {
+                        view.input.clear();
+                        view.command_mode = false;
+                    }
+                }
+                Err(error) => view.status = error.to_string(),
+            },
+            Action::Help => {
+                view.help = true;
+                view.input.clear();
+                view.command_mode = false;
+            }
+            Action::Info(title, body) => {
+                view.info = Some((title, body));
+                view.input.clear();
+                view.command_mode = false;
+            }
+            Action::Open(id) => open_contact(view, id),
+            Action::Tab(tab) => {
+                view.tab = tab;
+                view.selected = 0;
+                view.composing = false;
+                view.command_mode = false;
+                view.input.clear();
+                if tab == 1 {
+                    view.status =
+                        "Bluetooth пока не реализован; доступна переписка через релей".into();
+                }
+            }
+            Action::Profiles => {
+                if view.profiles.is_some() {
+                    view.profiles = None;
+                } else {
+                    let list = shum_store::profiles::Profiles::new(root)?.list()?.1;
+                    view.profile_selected = list.iter().position(|p| p.id == *profile).unwrap_or(0);
+                    view.profile_details
+                        .insert(profile.clone(), snapshot.clone());
+                    for p in &list {
+                        if p.id != *profile {
+                            let root = root.to_owned();
+                            let id = p.id.clone();
+                            previews.spawn(async move {
+                                let detail = profile_preview(&root, &id).await;
+                                (id, detail)
+                            });
+                        }
+                    }
+                    view.profiles = Some(list);
+                }
+            }
+            Action::Request(Request::Clear { contact })
+                if !matches!(view.form, Some(Form::ClearChat(_))) =>
+            {
+                // Resolve before asking for confirmation, so typos cannot clear a different chat.
+                match find_contact(snapshot, &contact) {
+                    Ok(c) => {
+                        view.form = Some(Form::ClearChat(text(&c["id"]).into()));
+                        view.input.clear();
+                    }
+                    Err(e) => view.status = e.to_string(),
+                }
+            }
+            action => {
+                if pending.is_some() {
+                    view.status = "Команда выполняется. Можно выйти: Ctrl+C / F10".into();
+                    continue;
+                }
+                let root = root.to_owned();
+                let current = profile.clone();
+                let task = tokio::spawn(async move {
+                    match action {
+                        Action::Request(request) => {
+                            ipc::request(&root, &current, request).await?;
+                            Ok(None)
+                        }
+                        Action::Switch(id) => {
+                            ipc::ensure(&root, &id).await?;
+                            let _ = tokio::time::timeout(
+                                Duration::from_millis(300),
+                                ipc::request(&root, &current, Request::Focus { contact: None }),
+                            )
+                            .await;
+                            shum_store::profiles::Profiles::new(&root)?.select(&id)?;
+                            Ok(Some(id))
+                        }
+                        Action::Delete(id) => {
+                            ipc::stop(&root, &id).await?;
+                            let profiles = shum_store::profiles::Profiles::new(&root)?;
+                            profiles.delete(&id)?;
+                            if id == current {
+                                let next = profiles.list()?.0.unwrap_or_default();
+                                if !next.is_empty() {
+                                    ipc::ensure(&root, &next).await?;
+                                }
+                                Ok(Some(next))
+                            } else {
+                                Ok(None)
+                            }
+                        }
+                        _ => Ok(None),
+                    }
+                });
+                pending = Some(Pending {
+                    task,
+                    input: view.input.clone(),
+                });
+                view.status = "Выполняется… Ctrl+C: выход".into();
             }
         }
+        let next = Activity {
+            contact: view.opened.clone(),
+            typing: view.composing
+                && !view.command_mode
+                && !view.input.is_empty()
+                && !view.input.starts_with('/'),
+        };
+        activity.send_if_modified(|old| {
+            if *old != next {
+                *old = next;
+                true
+            } else {
+                false
+            }
+        });
+        let _ = &worker; // Own the task until this terminal session ends.
+        tokio::task::yield_now().await;
     }
-    Ok(())
 }
-pub fn parse_input(input: &str, contact: Option<&str>) -> Result<Option<Request>> {
-    let contact = || contact.map(str::to_owned).context("Сначала выберите чат");
-    Ok(Some(match input.split_once(' ').unwrap_or((input, "")) {
-        ("/help", _) => return Ok(None),
-        ("/add", link) => Request::Add { link: link.into() },
-        ("/invite", _) => Request::Invite {
-            contact: contact()?,
-        },
-        ("/accept", _) => Request::Accept {
-            contact: contact()?,
-        },
-        ("/decline", _) => Request::Decline {
-            contact: contact()?,
-        },
-        ("/clear", _) => Request::Clear {
-            contact: contact()?,
-        },
-        ("/profile", name) => Request::Profile {
-            name: Some(name.into()),
-            bio: None,
-            seed: None,
-        },
-        ("/react", args) => {
-            let (message, reaction) = args
-                .split_once(' ')
-                .context("/react ID like|dislike|laugh|fire|coffin|hundred|horror")?;
-            Request::Reaction {
-                message: message.into(),
-                reaction: serde_json::from_value(Value::String(reaction.into()))?,
-            }
-        }
-        (command, _) if command.starts_with('/') => bail!("Неизвестная команда. /help"),
-        _ => Request::Send {
-            contact: contact()?,
-            text: input.into(),
-        },
-    }))
+
+const HELP: &str = "Клавиши работают в английской и русской раскладке.
+
+↑↓ / j k   выбрать чат       Enter открыть / отправить
+Esc        из ввода к списку Tab   сменить панель
+i          мой QR           a     добавить контакт
+Ctrl+P     профили          1–4   фильтр чатов
+q          выход из списка  Ctrl+C / Ctrl+Q / F10 из любого окна
+
+/add <ссылка>               /add --image \"/путь/qr.png\"
+/invite                    мой QR
+/invite <ник>              пригласить в переписку
+/accept [ник]              /decline [ник]
+/open <ник>                /send <ник> \"текст\"
+/read [ник]                /clear [ник] с подтверждением
+/react <ID> heart|like|dislike|laugh|fire|coffin|hundred|horror
+/cancel <ID>               /block <ник> [--undo]
+/profile                   /profile list
+/profile name <имя>        /profile bio <текст>
+/profile avatar --random   /profile avatar --seed <число>
+/keys verify <ник>         /status
+/chats [--invites|--unread|--nearby]       /contacts
+/quit или /exit            выход
+
+Ник с пробелами заключите в кавычки. Esc закрыть";
+
+/// Read presentation metadata without starting inactive profiles or exposing their messages.
+pub async fn profile_preview(root: &Path, id: &str) -> Option<Value> {
+    if root.join(id).join("locked").exists() {
+        return None;
+    }
+    if root.join(id).join("daemon.json").exists() {
+        return tokio::time::timeout(
+            Duration::from_millis(250),
+            ipc::request(root, id, Request::Snapshot),
+        )
+        .await
+        .ok()?
+        .ok();
+    }
+    let root = root.to_owned();
+    let id = id.to_owned();
+    tokio::task::spawn_blocking(move|| {
+        let profiles=shum_store::profiles::Profiles::new(root).ok()?;
+        let open=profiles.open(Some(&id)).ok()?;
+        let state=open.store.state();
+        Some(serde_json::json!({"card":state["ownProfileCard"],"chatCount":state["contacts"].as_array().map_or(0,Vec::len)}))
+    }).await.ok()?
 }
