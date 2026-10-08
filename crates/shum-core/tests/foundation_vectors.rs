@@ -21,7 +21,7 @@ fn exact_foundation_whitespace_set() {
 }
 
 #[test]
-fn proposed_strict_ed25519_exception_is_explicit() {
+fn approved_strict_ed25519_exception_is_explicit() {
     let f: serde_json::Value = serde_json::from_str(include_str!(
         "../../../protocol/vectors/02-foundation-ed25519.json"
     ))
