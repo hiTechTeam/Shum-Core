@@ -6,6 +6,74 @@ fn example() -> Value {
     json!({"profile":{"id":"local"},"card":{"name":"Игорь Загоев"},"relays":["wss://test.invalid"],"contacts":[{"id":"anna","card":{"name":"Аня","bio":"Дизайнер, люблю кофе и настолки.","avatarSeed":42},"unread":1,"nearby":false,"phase":"accepted","typing":true},{"id":"igor","card":{"name":"Игорь","avatarSeed":123},"phase":"incomingPending","unread":0}],"messages":[{"id":"m1","contactID":"anna","outgoing":false,"text":"Привет! Ты была на фестивале?","timestamp":1800000000000_i64,"status":"read"},{"id":"m2","contactID":"anna","outgoing":true,"text":"Да, у сцены с синтезаторами","timestamp":1800000100000_i64,"status":"read"}],"reactions":[{"messageID":"m2","mark":{"reaction":"like"}}]})
 }
 #[test]
+fn native_chat_avatars_stay_inside_rows_when_scrolling_and_resizing() {
+    use ratatui_image::picker::ProtocolType;
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(ProtocolType::Iterm2);
+    let mut pictures = Pictures::new(picker);
+    let mut data = example();
+    data["contacts"] = json!((0..20)
+        .map(|i| json!({"id":format!("contact{i}"),"card":{"name":format!("Peer{i}"),"avatarSeed":i},"phase":"accepted"}))
+        .collect::<Vec<_>>());
+    // Reuse the image cache across different layouts and scroll positions.
+    for (width, height) in [(100, 32), (40, 16), (35, 12), (9, 12), (100, 32)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        for selected in [0, 1, 19, 0] {
+            let mut view = View::default();
+            view.selected = selected;
+            terminal
+                .draw(|frame| {
+                    draw(frame, &data, &mut view, &mut pictures, false);
+                    let buffer = frame.buffer_mut();
+                    let mut previous_bottom = 0;
+                    let mut count = 0;
+                    for y in 0..height {
+                        for x in 0..width {
+                            let sequence = buffer[(x, y)].symbol();
+                            let Some((_, image)) = sequence.split_once("]1337;File=") else {
+                                continue;
+                            };
+                            let (header, payload) = image.split_once(':').unwrap();
+                            let dimension = |name: &str| -> u16 {
+                                header
+                                    .split(';')
+                                    .find_map(|part| part.strip_prefix(name))
+                                    .expect("explicit image bounds")
+                                    .parse()
+                                    .expect("image bounds must use character cells, not pixels")
+                            };
+                            let image_width = dimension("width=");
+                            let image_height = dimension("height=");
+                            assert!(image_width > 0 && image_width <= 6);
+                            assert!(image_height > 0 && image_height <= 3);
+                            assert!(y >= previous_bottom, "avatars overlap vertically");
+                            assert!(
+                                y + image_height < height - 2,
+                                "avatar covers the list border or footer"
+                            );
+                            assert!(
+                                x + image_width < width - 1,
+                                "avatar covers the right border"
+                            );
+                            assert!(payload.starts_with("iVBOR"), "retain the transparent PNG");
+                            previous_bottom = y + image_height;
+                            count += 1;
+                        }
+                    }
+                    if width < 35 {
+                        assert_eq!(count, 0, "small terminals show the resize prompt");
+                    } else {
+                        assert!(
+                            count > 0,
+                            "missing avatars at {width}x{height}, selected {selected}"
+                        );
+                    }
+                })
+                .unwrap();
+        }
+    }
+}
+#[test]
 fn nearby_screen_shows_live_radio_state_and_only_nearby_contacts() {
     let mut data = example();
     data["bluetooth"] = json!({"enabled":true,"scan":"scanning","advertise":"advertising"});

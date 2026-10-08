@@ -13,7 +13,11 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol, Resize, StatefulImage};
+use ratatui_image::{
+    picker::Picker,
+    protocol::{StatefulProtocol, StatefulProtocolType},
+    Resize, StatefulImage,
+};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -80,6 +84,7 @@ impl Pictures {
         self.draw_at(frame, seed, area, true);
     }
     fn draw_at(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect, thumbnail: bool) {
+        let area = area.intersection(frame.area());
         if area.is_empty() {
             return;
         }
@@ -151,6 +156,22 @@ impl Pictures {
             area,
             state,
         );
+        if let StatefulProtocolType::ITerm2(image) = state.protocol_type() {
+            // ratatui-image encodes pixel bounds using an estimated font size.
+            // Cell units keep images inside the layout at any terminal zoom/DPI.
+            // https://iterm2.com/documentation-images.html
+            let cell = &mut frame.buffer_mut()[(area.x, area.y)];
+            if let Some((prefix, dimensions)) = cell.symbol().split_once(";width=") {
+                if let Some((_, suffix)) = dimensions.split_once(";doNotMoveCursor=") {
+                    let bounded = format!(
+                        "{prefix};width={};height={};doNotMoveCursor={suffix}",
+                        image.size.width.min(area.width),
+                        image.size.height.min(area.height),
+                    );
+                    cell.set_symbol(&bounded);
+                }
+            }
+        }
     }
 }
 fn contacts(snapshot: &Value, tab: usize) -> Vec<&Value> {
@@ -362,8 +383,8 @@ fn draw_content(
                 Style::default()
             };
             frame.render_widget(Paragraph::new("").style(row_style), row);
-            let avatar_width = if pictures.halfblocks() { 12 } else { 6 };
-            let inset = if ascii { 2 } else { avatar_width + 1 };
+            let avatar_width = (if pictures.halfblocks() { 12 } else { 6 }).min(row.width);
+            let inset = (if ascii { 2 } else { avatar_width + 1 }).min(row.width);
             if !ascii {
                 if let Some(seed) = c["card"]["avatarSeed"].as_u64() {
                     pictures.thumbnail(
