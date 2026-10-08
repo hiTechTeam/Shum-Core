@@ -5,7 +5,8 @@ use serde_json::{json, Value};
 use shum_cli::{
     ipc, onboarding,
     runtime::{self, Request},
-    terminal, ui,
+    terminal::{self, Palette, Tone},
+    ui,
 };
 use shum_core::{card::Card, crypto, packet::ReactionKind};
 use shum_store::{profiles::Profiles, vault::KeyMode};
@@ -13,10 +14,16 @@ use std::{
     io::{self, IsTerminal, Write},
     path::PathBuf,
 };
+const HELP_STYLES: clap::builder::Styles = clap::builder::Styles::styled()
+    .header(clap::builder::styling::AnsiColor::Green.on_default().bold())
+    .usage(clap::builder::styling::AnsiColor::Green.on_default().bold())
+    .literal(clap::builder::styling::AnsiColor::Cyan.on_default())
+    .placeholder(clap::builder::styling::AnsiColor::Cyan.on_default());
 #[derive(Parser)]
 #[command(
     name = "shum",
     version,
+    styles = HELP_STYLES,
     about = "Мессенджер без номера телефона",
     after_help = "Без команды открываются чаты. При первом запуске Shum предложит создать профиль."
 )]
@@ -187,6 +194,7 @@ fn root(args: &Args) -> Result<PathBuf> {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let json_mode = std::env::args().any(|a| a == "--json");
+    let ascii_mode = std::env::args().any(|a| a == "--ascii");
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(error) => {
@@ -196,6 +204,12 @@ async fn main() -> std::process::ExitCode {
             );
             if json_mode {
                 println!("{}", json!({"message":error.to_string(),"success":help}));
+            } else if ascii_mode {
+                if help {
+                    print!("{error}");
+                } else {
+                    eprint!("{error}");
+                }
             } else {
                 let _ = error.print();
             }
@@ -208,13 +222,17 @@ async fn main() -> std::process::ExitCode {
             if json_mode {
                 println!("{}", json!({"error":error.to_string()}));
             } else {
-                eprintln!("Shum: {error}");
+                eprintln!(
+                    "{}",
+                    Palette::stderr(ascii_mode).paint(Tone::Error, format!("Shum: {error}"))
+                );
             }
             std::process::ExitCode::from(1)
         }
     }
 }
 async fn run(args: Args) -> Result<()> {
+    let palette = Palette::stdout(args.ascii);
     let root = root(&args)?;
     let profiles = Profiles::new(&root)?;
     let settings = onboarding::Settings {
@@ -262,7 +280,7 @@ async fn run(args: Args) -> Result<()> {
         return output(
             onboarding::json(&created)?,
             args.json,
-            &onboarding::completion(&created),
+            &palette.paint(Tone::Accent, onboarding::completion(&created)),
         );
     }
     if matches!(args.command, None | Some(Commands::Ui { .. }))
@@ -299,7 +317,14 @@ async fn run(args: Args) -> Result<()> {
                 } else {
                     " "
                 },
-                terminal::safe(&p.name)
+                palette.paint(
+                    if selected.as_deref() == Some(&p.id) {
+                        Tone::Accent
+                    } else {
+                        Tone::Text
+                    },
+                    terminal::safe(&p.name)
+                )
             );
         }
         return Ok(());
@@ -312,7 +337,10 @@ async fn run(args: Args) -> Result<()> {
         return output(
             json!({"selected":name}),
             args.json,
-            &format!("Выбран профиль {}", terminal::safe(name)),
+            &palette.paint(
+                Tone::Accent,
+                format!("Выбран профиль {}", terminal::safe(name)),
+            ),
         );
     }
     let profile = ipc::select(&profiles, args.profile.as_deref())?;
@@ -337,7 +365,11 @@ async fn run(args: Args) -> Result<()> {
         }
         ipc::stop(&root, &profile.id).await?;
         profiles.delete(&profile.id)?;
-        return output(json!({"deleted":profile.id}), args.json, "Профиль удалён");
+        return output(
+            json!({"deleted":profile.id}),
+            args.json,
+            &palette.paint(Tone::Accent, "Профиль удалён"),
+        );
     }
     if matches!(args.command, Some(Commands::Lock)) {
         ipc::stop(&root, &profile.id).await?;
@@ -347,7 +379,10 @@ async fn run(args: Args) -> Result<()> {
         return output(
             json!({"locked":true}),
             args.json,
-            "Профиль заблокирован. Для продолжения: shum unlock",
+            &palette.paint(
+                Tone::Accent,
+                "Профиль заблокирован. Для продолжения: shum unlock",
+            ),
         );
     }
     if matches!(args.command, Some(Commands::Unlock)) {
@@ -358,11 +393,19 @@ async fn run(args: Args) -> Result<()> {
             std::fs::remove_file(path)?;
         }
         ipc::ensure(&root, &profile.id).await?;
-        return output(json!({"locked":false}), args.json, "Профиль открыт");
+        return output(
+            json!({"locked":false}),
+            args.json,
+            &palette.paint(Tone::Accent, "Профиль открыт"),
+        );
     }
     if let Some(Commands::Daemon { stop: true, .. }) = &args.command {
         ipc::stop(&root, &profile.id).await?;
-        return output(json!({"stopped":true}), args.json, "Служба остановлена");
+        return output(
+            json!({"stopped":true}),
+            args.json,
+            &palette.paint(Tone::Accent, "Служба остановлена"),
+        );
     }
     if let Some(Commands::Daemon { install: true, .. }) = &args.command {
         ipc::stop(&root, &profile.id).await?;
@@ -370,7 +413,7 @@ async fn run(args: Args) -> Result<()> {
         return output(
             json!({"installed":true}),
             args.json,
-            "Автозапуск службы установлен",
+            &palette.paint(Tone::Accent, "Автозапуск службы установлен"),
         );
     }
     if !args.relay.is_empty() || args.push_url.is_some() || args.bluetooth || args.no_bluetooth {
@@ -527,7 +570,7 @@ async fn run(args: Args) -> Result<()> {
                 output(json!({"link":link,"errorCorrection":"M"}), true, "")
             } else {
                 terminal::print_qr(&link, args.ascii)?;
-                println!("{link}");
+                println!("{}", palette.paint(Tone::Command, &link));
                 Ok(())
             }
         }
@@ -571,7 +614,7 @@ async fn run(args: Args) -> Result<()> {
                     println!(
                         "{}  {}",
                         terminal::safe(terminal::text(&c["card"]["name"])),
-                        terminal::text(&c["id"])
+                        palette.paint(Tone::Command, terminal::safe(terminal::text(&c["id"])))
                     );
                 }
                 Ok(())
@@ -594,9 +637,9 @@ async fn run(args: Args) -> Result<()> {
                 println!(
                     "{}\nОтпечаток в iPhone: {}\nNoise / Shum ID: {}\nEd25519: {}\nСверьте отпечаток с собеседником: Профиль → Безопасность.",
                     terminal::safe(&card.name),
-                    terminal::fingerprint(&card),
-                    fingerprint,
-                    signing
+                    palette.paint(Tone::Accent, terminal::fingerprint(&card)),
+                    palette.paint(Tone::Command, fingerprint),
+                    palette.paint(Tone::Command, signing)
                 );
                 if qr {
                     terminal::print_qr(&card.invitation()?, args.ascii)?;
@@ -619,28 +662,20 @@ async fn run(args: Args) -> Result<()> {
                     "",
                 )
             } else {
-                println!("{}", ui::bluetooth_status(&value));
+                println!("{}", terminal::bluetooth(&value, palette));
                 terminal::chats(&value, true, false, false, args.ascii);
                 Ok(())
             }
         }
-        Some(Commands::Status) | Some(Commands::About) | Some(Commands::Daemon { .. }) => {
-            let description = format!(
-                "Shum {} · протокол v1\nПрофиль: {}\nРелеи: {}\n{}\nPush API: {}\nДанные: {}",
-                env!("CARGO_PKG_VERSION"),
-                terminal::safe(terminal::text(&value["card"]["name"])),
-                value["relays"].as_array().map_or(0, Vec::len),
-                ui::bluetooth_status(&value),
-                if value["pushConfigured"] == true {
-                    "настроен"
-                } else {
-                    "не настроен"
-                },
-                root.display()
-            );
+        Some(Commands::About) => {
+            let description = terminal::about(&value, &root, args.ascii);
             output(value, args.json, &description)
         }
-        _ => output(value, args.json, "Сохранено"),
+        Some(Commands::Status) | Some(Commands::Daemon { .. }) => {
+            let description = terminal::status(&value, &root, args.ascii);
+            output(value, args.json, &description)
+        }
+        _ => output(value, args.json, &palette.paint(Tone::Accent, "Сохранено")),
     }
 }
 async fn stream_chat(

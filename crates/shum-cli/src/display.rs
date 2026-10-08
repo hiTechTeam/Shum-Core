@@ -2,6 +2,23 @@
 use ratatui::{buffer::Buffer, style::Color};
 use ratatui_image::picker::ProtocolType;
 
+pub const ACCENT: Color = Color::Rgb(48, 209, 88);
+pub const MUTED: Color = Color::Rgb(135, 145, 139);
+pub const LOGO_COLOR: Color = Color::Rgb(93, 245, 138);
+pub const LOGO: [&str; 11] = [
+    "..########..",
+    ".##########.",
+    "############",
+    "############",
+    "############",
+    "############",
+    ".##########.",
+    "..########..",
+    "..###.......",
+    "..##........",
+    "..#.........",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Colors {
     Rgb,

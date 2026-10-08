@@ -1,4 +1,5 @@
 use crate::{
+    display::{ACCENT as GREEN, LOGO, LOGO_COLOR, MUTED},
     ipc,
     runtime::Request,
     terminal::{safe, text, trim_width},
@@ -19,22 +20,6 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-
-const GREEN: Color = Color::Rgb(48, 209, 88);
-const MUTED: Color = Color::Rgb(135, 145, 139);
-const LOGO: [&str; 11] = [
-    "..########..",
-    ".##########.",
-    "############",
-    "############",
-    "############",
-    "############",
-    ".##########.",
-    "..########..",
-    "..###.......",
-    "..##........",
-    "..#.........",
-];
 
 #[derive(Default)]
 pub struct View {
@@ -444,7 +429,7 @@ fn draw_content(
                 .map(|line| {
                     Line::from(Span::styled(
                         line.replace('#', "██").replace('.', "  "),
-                        Style::default().fg(Color::Rgb(93, 245, 138)),
+                        Style::default().fg(LOGO_COLOR),
                     ))
                 })
                 .collect::<Vec<_>>()

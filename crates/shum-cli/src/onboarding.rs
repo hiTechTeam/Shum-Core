@@ -1,5 +1,6 @@
 //! First-run presentation and profile creation stay in the client.
 use crate::{
+    display::{ACCENT as GREEN, MUTED},
     terminal::{safe, text},
     ui::Pictures,
 };
@@ -20,8 +21,6 @@ use shum_store::{
 };
 use std::{path::Path, time::Duration};
 
-const GREEN: Color = Color::Rgb(48, 209, 88);
-const MUTED: Color = Color::Rgb(135, 145, 139);
 const SHIELD: [&str; 13] = [
     "  ############  ",
     " #            # ",

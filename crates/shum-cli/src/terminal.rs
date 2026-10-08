@@ -1,10 +1,91 @@
+use crate::display::{Colors, Display, ACCENT, LOGO, LOGO_COLOR, MUTED};
 use anyhow::{bail, Result};
+use ratatui::style::Color;
 use serde_json::Value;
 use std::{
     io::{self, IsTerminal, Write},
     path::Path,
 };
 use unicode_width::UnicodeWidthStr;
+
+#[derive(Clone, Copy)]
+pub enum Tone {
+    Logo,
+    Accent,
+    Command,
+    Warning,
+    Error,
+    Text,
+    Muted,
+}
+impl Tone {
+    fn color(self) -> Color {
+        match self {
+            Self::Logo => LOGO_COLOR,
+            Self::Accent => ACCENT,
+            Self::Command => Color::Rgb(83, 214, 255),
+            Self::Warning => Color::Rgb(255, 214, 10),
+            Self::Error => Color::Rgb(255, 69, 58),
+            Self::Text => Color::Rgb(229, 231, 230),
+            Self::Muted => MUTED,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Palette {
+    colors: Colors,
+    enabled: bool,
+}
+impl Palette {
+    pub fn new(colors: Colors, enabled: bool) -> Self {
+        Self { colors, enabled }
+    }
+    pub fn stdout(ascii: bool) -> Self {
+        Self::detect(ascii, io::stdout().is_terminal())
+    }
+    pub fn stderr(ascii: bool) -> Self {
+        Self::detect(ascii, io::stderr().is_terminal())
+    }
+    fn detect(ascii: bool, tty: bool) -> Self {
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        Self::new(
+            Display::detect().colors,
+            tty && !ascii && !no_color && std::env::var("TERM").as_deref() != Ok("dumb"),
+        )
+    }
+    pub fn paint(self, tone: Tone, value: impl AsRef<str>) -> String {
+        let value = value.as_ref();
+        if !self.enabled || value.is_empty() {
+            return value.to_owned();
+        }
+        let sgr = match self.colors.color(tone.color()) {
+            Color::Rgb(r, g, b) => format!("38;2;{r};{g};{b}"),
+            Color::Indexed(index) => format!("38;5;{index}"),
+            _ => unreachable!(),
+        };
+        // Only foreground colours: leave the shell background and later output intact.
+        format!("\x1b[{sgr}m{value}\x1b[0m")
+    }
+    fn swatches(self) -> String {
+        if !self.enabled {
+            return String::new();
+        }
+        [
+            Tone::Logo,
+            Tone::Accent,
+            Tone::Command,
+            Tone::Warning,
+            Tone::Error,
+            Tone::Text,
+            Tone::Muted,
+        ]
+        .into_iter()
+        .map(|tone| self.paint(tone, "██"))
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+}
 pub fn safe(text: &str) -> String {
     text.chars()
         .filter(|c| {
@@ -38,7 +119,7 @@ pub fn find_contact<'a>(snapshot: &'a Value, selector: &str) -> Result<&'a Value
 }
 pub fn print_qr(content: &str, ascii: bool) -> Result<()> {
     let code = qr(content, ascii)?;
-    if !ascii && io::stdout().is_terminal() {
+    if Palette::stdout(ascii).enabled {
         for line in code.lines() {
             println!("\x1b[30;47m{line}\x1b[0m");
         }
@@ -126,7 +207,7 @@ pub fn prompt(label: &str) -> Result<String> {
     Ok(value.trim().to_owned())
 }
 pub fn avatar(seed: u64, ascii: bool) {
-    if ascii || !io::stdout().is_terminal() {
+    if !Palette::stdout(ascii).enabled {
         return;
     }
     if native_avatar(seed).unwrap_or(false) {
@@ -201,19 +282,53 @@ pub fn profile(snapshot: &Value, ascii: bool) {
         .ok()
         .map(|c| fingerprint(&c))
         .unwrap_or_default();
-    println!("  {} · текущий\n  {}\n\n  Чаты       {chats}\n  Контакты   {contacts}\n  Аватар     пиксельный (для всех)\n  Фото       пока недоступно\n\n  Отпечаток  {fingerprint}\n  Shum ID    {}", safe(text(&card["name"])), safe(text(&card["bio"])),text(&snapshot["profile"]["ownerId"]));
+    let palette = Palette::stdout(ascii);
+    println!("  {} {}\n  {}\n\n  {} {chats}\n  {} {contacts}\n  {} пиксельный (для всех)\n  {} пока недоступно\n\n  {} {}\n  {} {}",
+        palette.paint(Tone::Accent, safe(text(&card["name"]))),
+        palette.paint(Tone::Muted, "· текущий"),
+        palette.paint(Tone::Muted, safe(text(&card["bio"]))),
+        palette.paint(Tone::Muted, "Чаты      "),
+        palette.paint(Tone::Muted, "Контакты  "),
+        palette.paint(Tone::Muted, "Аватар    "),
+        palette.paint(Tone::Muted, "Фото      "),
+        palette.paint(Tone::Muted, "Отпечаток "),
+        palette.paint(Tone::Command, fingerprint),
+        palette.paint(Tone::Muted, "Shum ID   "),
+        palette.paint(Tone::Command, safe(text(&snapshot["profile"]["ownerId"]))));
 }
 pub fn chats(snapshot: &Value, nearby: bool, invites: bool, unread: bool, ascii: bool) {
+    print!(
+        "{}",
+        render_chats(
+            snapshot,
+            nearby,
+            invites,
+            unread,
+            ascii,
+            Palette::stdout(ascii)
+        )
+    );
+}
+
+pub fn render_chats(
+    snapshot: &Value,
+    nearby: bool,
+    invites: bool,
+    unread: bool,
+    ascii: bool,
+    palette: Palette,
+) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
     let contacts = snapshot["contacts"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     let invite = |c: &Value| text(&c["phase"]) == "incomingPending";
     for contact in contacts {
-        if nearby && !contact["nearby"].as_bool().unwrap_or(false)
-            || invites && !invite(contact)
-            || unread && contact["unread"].as_u64().unwrap_or(0) == 0
-        {
+        let is_nearby = contact["nearby"] == true;
+        let count = contact["unread"].as_u64().unwrap_or(0);
+        if nearby && !is_nearby || invites && !invite(contact) || unread && count == 0 {
             continue;
         }
         let last = snapshot["messages"].as_array().and_then(|messages| {
@@ -230,22 +345,301 @@ pub fn chats(snapshot: &Value, nearby: bool, invites: bool, unread: bool, ascii:
             last.map(|m| trim_width(text(&m["text"]), 33))
                 .unwrap_or_else(|| "нет сообщений".into())
         };
-        println!(
-            "  {} {:22} {:33} {}",
-            if ascii { "*" } else { "·" },
-            trim_width(text(&contact["card"]["name"]), 22),
-            preview,
-            contact["unread"]
-        );
+        let timestamp = last
+            .and_then(|m| m["timestamp"].as_i64())
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .map(|t| {
+                let t = t.with_timezone(&chrono::Local);
+                if t.date_naive() == chrono::Local::now().date_naive() {
+                    t.format("%H:%M").to_string()
+                } else {
+                    t.format("%d.%m").to_string()
+                }
+            })
+            .unwrap_or_default();
+        let marker = if ascii {
+            if is_nearby {
+                "*"
+            } else {
+                " "
+            }
+        } else if is_nearby {
+            "●"
+        } else {
+            "·"
+        };
+        let name = format!("{:22}", trim_width(text(&contact["card"]["name"]), 22));
+        let preview = format!("{preview:33}");
+        let preview = if invite(contact) {
+            palette.paint(Tone::Warning, preview)
+        } else if nearby {
+            palette.paint(Tone::Accent, preview)
+        } else if count == 0 {
+            palette.paint(Tone::Muted, preview)
+        } else {
+            preview
+        };
+        writeln!(
+            output,
+            "  {} {name} {preview} {} {}",
+            palette.paint(if is_nearby { Tone::Accent } else { Tone::Muted }, marker),
+            palette.paint(Tone::Muted, format!("{timestamp:5}")),
+            palette.paint(
+                Tone::Accent,
+                if count > 0 {
+                    count.to_string()
+                } else {
+                    String::new()
+                }
+            )
+        )
+        .unwrap();
     }
-    println!(
-        "\n  Все {} · Рядом {} · Приглашения {} · Непрочитанные {}",
+    writeln!(
+        output,
+        "\n  {} {} · {} {} · {} {} · {} {}",
+        palette.paint(Tone::Muted, "Все"),
         contacts.len(),
-        contacts.iter().filter(|c| c["nearby"] == true).count(),
-        contacts.iter().filter(|c| invite(c)).count(),
-        contacts
-            .iter()
-            .filter(|c| c["unread"].as_u64().unwrap_or(0) > 0)
-            .count()
+        palette.paint(Tone::Muted, "Рядом"),
+        palette.paint(
+            Tone::Accent,
+            contacts
+                .iter()
+                .filter(|c| c["nearby"] == true)
+                .count()
+                .to_string()
+        ),
+        palette.paint(Tone::Muted, "Приглашения"),
+        palette.paint(
+            Tone::Warning,
+            contacts.iter().filter(|c| invite(c)).count().to_string()
+        ),
+        palette.paint(Tone::Muted, "Непрочитанные"),
+        palette.paint(
+            Tone::Accent,
+            contacts
+                .iter()
+                .filter(|c| c["unread"].as_u64().unwrap_or(0) > 0)
+                .count()
+                .to_string()
+        )
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "  {} {}",
+        palette.paint(Tone::Muted, "Фильтр:"),
+        palette.paint(Tone::Command, "--nearby  --invites  --unread")
+    )
+    .unwrap();
+    if contacts.iter().any(invite) {
+        writeln!(
+            output,
+            "  {} {}",
+            palette.paint(Tone::Muted, "Принять:"),
+            palette.paint(Tone::Command, "shum accept <имя>")
+        )
+        .unwrap();
+    }
+    output
+}
+
+pub fn bluetooth(snapshot: &Value, palette: Palette) -> String {
+    let value = &snapshot["bluetooth"];
+    let ready = value["scan"] == "scanning" && value["advertise"] == "advertising";
+    let tone = if ready {
+        Tone::Accent
+    } else if value["enabled"] == false {
+        Tone::Muted
+    } else {
+        Tone::Warning
+    };
+    palette.paint(tone, safe(&crate::ui::bluetooth_status(snapshot)))
+}
+
+pub fn status(snapshot: &Value, root: &Path, ascii: bool) -> String {
+    let p = Palette::stdout(ascii);
+    let relays = snapshot["relays"].as_array().map_or(0, Vec::len);
+    format!(
+        "{} {}\n{} {}\n{} {}\n{}\n{} {}\n{} {}",
+        p.paint(Tone::Accent, format!("Shum {}", env!("CARGO_PKG_VERSION"))),
+        p.paint(Tone::Muted, "· протокол v1"),
+        p.paint(Tone::Muted, "Профиль:"),
+        safe(text(&snapshot["card"]["name"])),
+        p.paint(Tone::Muted, "Релеи:"),
+        p.paint(
+            if relays > 0 {
+                Tone::Accent
+            } else {
+                Tone::Warning
+            },
+            relays.to_string()
+        ),
+        bluetooth(snapshot, p),
+        p.paint(Tone::Muted, "Push API:"),
+        if snapshot["pushConfigured"] == true {
+            "настроен"
+        } else {
+            "не настроен"
+        },
+        p.paint(Tone::Muted, "Данные:"),
+        safe(&root.display().to_string())
+    )
+}
+
+pub fn about(snapshot: &Value, root: &Path, ascii: bool) -> String {
+    let (width, height) = if io::stdout().is_terminal() {
+        crossterm::terminal::size().unwrap_or((80, 32))
+    } else {
+        (80, 32)
+    };
+    let program = std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "терминал".into());
+    let program = match program.as_str() {
+        "Apple_Terminal" => "Terminal.app",
+        "WarpTerminal" => "Warp",
+        other => other,
+    };
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    let system = format!("{os} · {} · {width}×{height}", safe(program));
+    render_about(
+        snapshot,
+        root,
+        &system,
+        usize::from(width),
+        ascii,
+        Palette::stdout(ascii),
+    )
+}
+
+pub fn render_about(
+    snapshot: &Value,
+    root: &Path,
+    system: &str,
+    width: usize,
+    ascii: bool,
+    p: Palette,
+) -> String {
+    use std::fmt::Write;
+    let relays = snapshot["relays"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let nearby = snapshot["contacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["nearby"] == true)
+        .count();
+    let side_by_side = !ascii && width >= 72;
+    let body_width = width
+        .saturating_sub(if side_by_side { 30 } else { 2 })
+        .max(20);
+    let mut rows = vec![
+        format!(
+            "{} {}",
+            p.paint(Tone::Accent, format!("Shum {}", env!("CARGO_PKG_VERSION"))),
+            p.paint(Tone::Muted, "· протокол v1")
+        ),
+        p.paint(
+            Tone::Muted,
+            (if ascii { "-" } else { "─" }).repeat(body_width.min(46)),
+        ),
+    ];
+    let mut field = |label: &str, value: &str, tone: Option<Tone>| {
+        let mut part = String::new();
+        let mut first = true;
+        // Wrap before applying ANSI, so escape sequences never affect alignment.
+        for c in safe(value).chars().chain(std::iter::once('\0')) {
+            let next_width = UnicodeWidthStr::width(part.as_str())
+                + unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if c == '\0' || next_width > body_width.saturating_sub(11) {
+                rows.push(format!(
+                    "{} {}",
+                    p.paint(
+                        Tone::Muted,
+                        format!("{:10}", if first { label } else { "" })
+                    ),
+                    tone.map_or_else(|| part.clone(), |tone| p.paint(tone, &part))
+                ));
+                first = false;
+                part.clear();
+            }
+            if c != '\0' {
+                part.push(c);
+            }
+        }
+    };
+    field("Профиль", text(&snapshot["card"]["name"]), None);
+    field(
+        "Shum ID",
+        text(&snapshot["profile"]["ownerId"]),
+        Some(Tone::Command),
     );
+    field(
+        "Релеи",
+        &format!("{} подключено", relays.len()),
+        Some(if relays.is_empty() {
+            Tone::Warning
+        } else {
+            Tone::Accent
+        }),
+    );
+    let ready = snapshot["bluetooth"]["scan"] == "scanning"
+        && snapshot["bluetooth"]["advertise"] == "advertising";
+    let bluetooth = crate::ui::bluetooth_status(snapshot);
+    field(
+        "Bluetooth",
+        if ready {
+            "вкл · профиль виден рядом"
+        } else {
+            bluetooth
+                .strip_prefix("Bluetooth")
+                .unwrap_or(&bluetooth)
+                .trim_start_matches([' ', ':', '·'])
+        },
+        Some(if ready { Tone::Accent } else { Tone::Warning }),
+    );
+    field("Рядом", &nearby.to_string(), None);
+    field("Система", system, None);
+    let root_display = std::env::var_os("HOME")
+        .and_then(|home| root.strip_prefix(home).ok())
+        .map(|relative| format!("~/{}", relative.display()))
+        .unwrap_or_else(|| root.display().to_string());
+    field("Данные", &root_display, None);
+    rows.push(p.swatches());
+    let mut output = String::new();
+    if !ascii && !side_by_side {
+        for line in LOGO {
+            let logo = line.replace('.', "  ").replace('#', "██");
+            writeln!(output, "  {}", p.paint(Tone::Logo, logo)).unwrap();
+        }
+    }
+    for i in 0..rows.len().max(if side_by_side { LOGO.len() } else { 0 }) {
+        let row = rows.get(i).map(String::as_str).unwrap_or("");
+        if side_by_side {
+            let logo = LOGO
+                .get(i)
+                .unwrap_or(&"............")
+                .replace('.', "  ")
+                .replace('#', "██");
+            writeln!(output, "  {}    {row}", p.paint(Tone::Logo, logo)).unwrap();
+        } else {
+            writeln!(output, "  {row}").unwrap();
+        }
+    }
+    writeln!(
+        output,
+        "\n  Мессенджер без номера телефона.\n  {}",
+        p.paint(
+            Tone::Muted,
+            "Ключи создаются на устройстве и не покидают его."
+        )
+    )
+    .unwrap();
+    output
 }
