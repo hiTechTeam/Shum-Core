@@ -64,10 +64,22 @@ pub struct Pictures {
     pub(crate) colors: crate::display::Colors,
     cache: HashMap<(u64, u16, u16), StatefulProtocol>,
     scene: Option<u64>,
+    direct: Option<crate::graphics::DirectImages>,
+    hide_direct: bool,
 }
 impl Pictures {
     pub fn new(picker: Picker) -> Self {
-        Self::with_colors(picker, crate::display::Display::detect().colors)
+        Self::with_display(picker, crate::display::Display::detect())
+    }
+    pub fn with_display(picker: Picker, display: crate::display::Display) -> Self {
+        let direct = display.direct_images
+            && picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
+            && !picker.tmux_detected();
+        let mut result = Self::with_colors(picker, display.colors);
+        if direct {
+            result.direct = Some(crate::graphics::DirectImages::default());
+        }
+        result
     }
     pub fn with_colors(picker: Picker, colors: crate::display::Colors) -> Self {
         Self {
@@ -75,6 +87,8 @@ impl Pictures {
             colors,
             cache: HashMap::new(),
             scene: None,
+            direct: None,
+            hide_direct: false,
         }
     }
     fn halfblocks(&self) -> bool {
@@ -90,8 +104,10 @@ impl Pictures {
         }
         let mut hash = DefaultHasher::new();
         scene.hash(&mut hash);
+        terminal.size()?.hash(&mut hash);
         let next = hash.finish();
         if self.scene != Some(next) {
+            self.clear_graphics(terminal)?;
             // Inline graphics live outside Ratatui's cell diff. ECH erases text,
             // but Warp can retain the old image under a transparent replacement.
             // Clear the terminal and its diff buffer together when images move,
@@ -105,58 +121,69 @@ impl Pictures {
         }
         Ok(())
     }
+    pub(crate) fn clear_graphics<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+    ) -> std::result::Result<(), B::Error> {
+        if let Some(direct) = &mut self.direct {
+            direct.clear(terminal)?;
+        }
+        Ok(())
+    }
     pub(crate) fn draw(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
-        self.draw_at(frame, seed, area, false);
+        self.draw_at(frame, seed, area);
     }
     fn thumbnail(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
-        self.draw_at(frame, seed, area, true);
+        self.draw_at(frame, seed, area);
     }
-    fn draw_at(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect, thumbnail: bool) {
+    fn draw_at(&mut self, frame: &mut Frame<'_>, seed: u64, area: Rect) {
         let area = area.intersection(frame.area());
         if area.is_empty() {
             return;
         }
         if self.halfblocks() {
-            // The generic image widget interpolates halfblocks and flattens alpha.
-            // Pixel subjects need nearest-neighbour samples and terminal background.
-            let pixels = crate::avatar::render_subject(seed).pixels;
-            let side = area.width.min(area.height.saturating_mul(2)) / 2 * 2;
+            // Smaller full portraits lose their single-pixel facial details.
+            // Compact layouts omit the picture instead of displaying a blob.
+            if area.width < 18 || area.height < 9 {
+                return;
+            }
+            let side = area.width.min(area.height.saturating_mul(2)).min(36) / 2 * 2;
             let height = side / 2;
             if height == 0 {
                 return;
             }
             let x0 = area.x + (area.width - side) / 2;
             let y0 = area.y + (area.height - height) / 2;
-            // Text thumbnails show the face at its logical pixel resolution;
-            // shrinking the whole figure erased its eyes and other details.
-            let (source, left, top) = if thumbnail && side >= 12 {
-                (24, 6, 4)
-            } else {
-                (36, 0, 0)
-            };
+            let pixels = crate::avatar::render_subject(seed).sampled(usize::from(side));
             for y in 0..height {
                 for x in 0..side {
-                    let sx = (left + (u32::from(x) * 2 + 1) * source / (u32::from(side) * 2))
-                        .min(35) as usize;
-                    let sy = (top + (u32::from(y) * 4 + 1) * source / (u32::from(height) * 4))
-                        .min(35) as usize;
-                    let by = (top + (u32::from(y) * 4 + 3) * source / (u32::from(height) * 4))
-                        .min(35) as usize;
-                    let a = pixels[sy * 36 + sx];
-                    let b = pixels[by * 36 + sx];
+                    let a = pixels[usize::from(y * 2 * side + x)];
+                    let b = pixels[usize::from((y * 2 + 1) * side + x)];
                     let cell = &mut frame.buffer_mut()[(x0 + x, y0 + y)];
-                    let rgb = |p: [u8; 4]| Color::Rgb(p[0], p[1], p[2]);
-                    match (a[3] > 0, b[3] > 0) {
-                        (true, true) => {
-                            cell.set_char('▀').set_fg(rgb(a)).set_bg(rgb(b));
+                    if a[3] == 0 && b[3] == 0 {
+                        continue;
+                    }
+                    let background = match cell.bg {
+                        Color::Rgb(r, g, b) => [r, g, b],
+                        _ => [10, 13, 11],
+                    };
+                    let composite = |p: [u8; 4]| {
+                        let mut channels = [0; 3];
+                        for i in 0..3 {
+                            channels[i] = ((u32::from(p[i]) * u32::from(p[3])
+                                + u32::from(background[i]) * (255 - u32::from(p[3]))
+                                + 127)
+                                / 255) as u8;
                         }
-                        (true, false) => {
-                            cell.set_char('▀').set_fg(rgb(a));
-                        }
-                        (false, true) => {
-                            cell.set_char('▄').set_fg(rgb(b));
-                        }
-                        (false, false) => {}
+                        Color::Rgb(channels[0], channels[1], channels[2])
+                    };
+                    let (top, bottom) = (composite(a), composite(b));
+                    // A solid cell needs no glyph. Always use the upper block
+                    // otherwise: Terminal.app's lower-block glyph can leave seams.
+                    if top == bottom {
+                        cell.set_char(' ').set_bg(bottom);
+                    } else {
+                        cell.set_char('▀').set_fg(top).set_bg(bottom);
                     }
                 }
             }
@@ -164,6 +191,12 @@ impl Pictures {
         }
         if self.cache.len() > 256 {
             self.cache.clear();
+        }
+        if let Some(direct) = &mut self.direct {
+            if !self.hide_direct {
+                direct.draw(frame, seed, area);
+            }
+            return;
         }
         let state = self
             .cache
@@ -290,7 +323,13 @@ pub fn draw(
     pictures: &mut Pictures,
     ascii: bool,
 ) {
+    pictures.hide_direct = view.help
+        || view.qr.is_some()
+        || view.info.is_some()
+        || view.profiles.is_some()
+        || view.form.is_some();
     draw_content(frame, snapshot, view, pictures, ascii);
+    pictures.hide_direct = false;
     pictures.colors.apply(frame.buffer_mut(), ascii);
 }
 fn draw_content(
@@ -388,10 +427,11 @@ fn draw_content(
         );
         let inner = block.inner(list_area);
         frame.render_widget(block, list_area);
-        let row_height = if ascii {
+        let show_avatars = !ascii && (!pictures.halfblocks() || inner.height >= 9);
+        let row_height = if !show_avatars {
             2
         } else if pictures.halfblocks() {
-            6
+            9
         } else {
             3
         };
@@ -411,9 +451,9 @@ fn draw_content(
                 Style::default()
             };
             frame.render_widget(Paragraph::new("").style(row_style), row);
-            let avatar_width = (if pictures.halfblocks() { 12 } else { 6 }).min(row.width);
-            let inset = (if ascii { 2 } else { avatar_width + 1 }).min(row.width);
-            if !ascii {
+            let avatar_width = (if pictures.halfblocks() { 18 } else { 6 }).min(row.width);
+            let inset = (if !show_avatars { 2 } else { avatar_width + 1 }).min(row.width);
+            if show_avatars {
                 if let Some(seed) = c["card"]["avatarSeed"].as_u64() {
                     pictures.thumbnail(
                         frame,
@@ -532,9 +572,10 @@ fn draw_content(
         let block = border(&title, ascii);
         let inner = block.inner(parts[0]);
         frame.render_widget(block, parts[0]);
-        let header_height = if ascii {
+        let show_avatar = !ascii && (!pictures.halfblocks() || inner.height >= 12);
+        let header_height = if !show_avatar {
             2
-        } else if pictures.halfblocks() && inner.height >= 18 {
+        } else if pictures.halfblocks() {
             9
         } else {
             4
@@ -542,7 +583,7 @@ fn draw_content(
         .min(inner.height.saturating_sub(1));
         let avatar_width = header_height * 2;
         if let Some(card) = card {
-            if !ascii {
+            if show_avatar {
                 if let Some(seed) = card["card"]["avatarSeed"].as_u64() {
                     pictures.draw(
                         frame,
@@ -556,7 +597,7 @@ fn draw_content(
                     );
                 }
             }
-            let x = if ascii { 0 } else { avatar_width + 1 };
+            let x = if show_avatar { avatar_width + 1 } else { 0 };
             let phase = if card["typing"] == true {
                 "печатает…"
             } else if card["phase"] == "incomingPending" {
@@ -1304,6 +1345,7 @@ pub async fn run(
             ascii,
         )
         .await;
+        let _ = pictures.clear_graphics(&mut terminal);
         drop(guard);
         let _ = tokio::time::timeout(
             Duration::from_millis(300),

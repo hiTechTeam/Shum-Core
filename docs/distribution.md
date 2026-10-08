@@ -38,7 +38,7 @@ macOS учитывает как CLI, так и встроенную службу
 Проверка пакета без установки:
 
 ```sh
-python3 scripts/verify_macos_package.py dist/Shum-CLI-0.1.1-macOS-arm64-unsigned.pkg
+python3 scripts/verify_macos_package.py dist/Shum-CLI-0.1.2-macOS-arm64-unsigned.pkg
 ```
 
 ## Homebrew

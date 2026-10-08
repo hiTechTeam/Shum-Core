@@ -60,14 +60,16 @@ for program in (["Apple_Terminal"] if legacy else ["Apple_Terminal", "WarpTermin
                 print("PASS Apple Terminal: indexed colours, dark background, Shum title")
             else:
                 assert rgb
-                pngs = re.findall(rb"\x1b\]1337;File=[^:]*:([A-Za-z0-9+/=]+)\x07", raw)
+                assert b'\x1b_Ga=d,d=I,' in raw, 'Warp requires explicit graphics deletion'
+                assert b'\x1b]1337;' not in raw, 'do not use random iTerm image placements in Warp'
+                pngs = re.findall(rb"\x1b_Ga=T,[^;]*;([A-Za-z0-9+/=]+)\x1b\\", raw)
                 assert pngs, "Warp did not receive a native image"
                 png = base64.b64decode(pngs[-1])
                 assert png.startswith(b"\x89PNG\r\n\x1a\n")
                 destination = pathlib.Path("/tmp/shum-terminal-review/warp-avatar.png")
                 destination.parent.mkdir(exist_ok=True)
                 destination.write_bytes(png)
-                print("PASS Warp: RGB colours and native PNG avatar")
+                print("PASS Warp: RGB colours, native PNG and owned Kitty placements")
             os.write(master, b"\x11")
             proc.wait(timeout=3)
             assert proc.returncode == 0
@@ -90,6 +92,7 @@ for program in (["Apple_Terminal"] if legacy else ["Apple_Terminal", "WarpTermin
                         break
                 assert proc.returncode == 0, raw[-1000:]
                 assert b"38;5;" in raw and b"38;2;" not in raw and b"48;2;" not in raw
+                assert "▄".encode() not in raw, "avoid lower-block font seams in standalone avatars"
                 print("PASS Apple Terminal: standalone avatar uses indexed colours")
         finally:
             if proc.poll() is None:

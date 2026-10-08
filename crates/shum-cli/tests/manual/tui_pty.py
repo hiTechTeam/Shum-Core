@@ -50,6 +50,10 @@ class Screen:
                 match=re.match(r'\x1b\][^\x07]*(?:\x07|\x1b\\)',self.pending)
                 if not match:break
                 self.pending=self.pending[match.end():];continue
+            if self.pending.startswith('\x1b_'):
+                end=self.pending.find('\x1b\\',2)
+                if end < 0:break
+                self.pending=self.pending[end+2:];continue
             if self.pending.startswith('\x1b'):
                 if len(self.pending)<2:break
                 self.pending=self.pending[2:];continue
@@ -73,7 +77,7 @@ class Terminal:
         self.before = termios.tcgetattr(slave)
         env = dict(os.environ, TERM='xterm-256color')
         for name in ['TERM_PROGRAM','KITTY_WINDOW_ID','WT_SESSION']: env.pop(name,None)
-        if images: env['TERM_PROGRAM']='WarpTerminal'
+        if images: env['TERM_PROGRAM']=images
         self.proc = subprocess.Popen([BIN,'--data-dir',str(ROOT),*args],stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)
         self.slave = slave; self.raw = b''; self.screen=Screen(); CHILDREN.append(self)
     def read(self, duration=.15):
@@ -133,19 +137,44 @@ try:
     # Real native-image output must erase the old graphics before switching chats.
     c=cli('--relay','ws://127.0.0.1:9','--push-url','off','init','--headless','--name','Второй')
     cli('-p',aid,'add',c['invitation'])
-    t=Terminal('-p',aid,'ui','Друг',images=True);t.expect('Сообщение')
-    assert b']1337;File=' in t.raw
-    assert b'\x1b[6n' not in t.raw, 'redraw must not wait for a cursor-position response'
-    for name in ['Второй','Друг','Второй']:
-        t.send('\x1b'); t.send('/open '+name)
-        before=len(t.raw);t.send('\r');t.expect('Сообщение')
-        changed=t.raw[before:]
-        assert b'\x1b[2J' in changed, 'old native graphics were not cleared'
-        assert changed.index(b'\x1b[2J') < changed.index(b']1337;File='), 'clear must precede new images'
-        before=len(t.raw);t.send('draft')
-        assert b'\x1b[2J' not in t.raw[before:], 'typing must not repeatedly clear the screen'
-        t.send('\x7f'*5)
-    t.exit('\x11');print('PASS native graphics cleared on chat switch without flicker while typing')
+    for program in ['iTerm.app','WarpTerminal']:
+        t=Terminal('-p',aid,'ui','Друг',images=program);t.expect('Сообщение')
+        marker=b'_Ga=T,' if program=='WarpTerminal' else b']1337;File='
+        assert marker in t.raw
+        assert b'\x1b[6n' not in t.raw, 'redraw must not wait for a cursor-position response'
+        def placements(raw):
+            # A terminal's graphics plane survives text erasure. Model only
+            # explicit graphics commands; ED2/ECH cannot make this test pass.
+            active=set()
+            for header in re.findall(rb'\x1b_G([^;]*);[^\x1b]*\x1b\\',raw):
+                parts=dict(p.split(b'=',1) for p in header.split(b',') if b'=' in p)
+                action=parts.get(b'a'); ident=parts.get(b'i')
+                if action==b'd':
+                    assert parts.get(b'd')==b'I', 'delete only owned image IDs'
+                    active.discard(ident)
+                if action==b'T':
+                    assert ident not in active, 'old placement not deleted before replacement'
+                    active.add(ident)
+                    assert len(active)<=3, 'stale images accumulated across chats'
+            return active
+        for name in ['Второй','Друг','Второй']:
+            t.send('\x1b'); t.send('/open '+name)
+            before=len(t.raw);t.send('\r');t.expect('Сообщение')
+            changed=t.raw[before:]
+            assert b'\x1b[2J' in changed
+            assert changed.index(b'\x1b[2J') < changed.index(marker)
+            if program=='WarpTerminal': assert len(placements(t.raw))==3
+            before=len(t.raw);t.send('draft')
+            assert b'\x1b[2J' not in t.raw[before:], 'typing must not repeatedly clear the screen'
+            t.send('\x7f'*5)
+        if program=='WarpTerminal':
+            t.send('\x1b');t.send('/help\r');t.expect('Команды в Shum')
+            assert not placements(t.raw), 'native images cover a modal'
+            t.send('\x1b');t.expect('Сообщение')
+            assert len(placements(t.raw))==3
+        t.exit('\x11')
+        if program=='WarpTerminal': assert not placements(t.raw), 'images retained after exit'
+        print('PASS native graphics replacement and cleanup:',program)
     # A c2 lookup is pending for up to 20 seconds; UI must still accept exit.
     link='shum://c2/'+base64.urlsafe_b64encode(bytes.fromhex(b['card']['nostrKey'])).decode().rstrip('=')
     for quit_key in ['\x03','\x11','\x1b[21~']:

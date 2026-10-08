@@ -214,17 +214,21 @@ pub fn avatar(seed: u64, ascii: bool) {
         return;
     }
     let avatar = crate::avatar::render_subject(seed);
-    let pixels = avatar.coarse18();
+    let pixels = avatar.sampled(18);
     let colors = crate::display::Display::detect().colors;
     for y in (0..18).step_by(2) {
         print!("  ");
         for x in 0..18 {
             let top = pixels[y * 18 + x];
             let bottom = pixels[(y + 1) * 18 + x];
+            print!("\x1b[0m");
             match (top[3] > 0, bottom[3] > 0) {
-                (false, false) => print!("\x1b[0m "),
-                (true, false) => print!("\x1b[0m{}▀", colors.sgr(top, false)),
-                (false, true) => print!("\x1b[0m{}▄", colors.sgr(bottom, false)),
+                (false, false) => print!(" "),
+                (true, false) => print!("{}▀", colors.sgr(top, false)),
+                // Inverse video puts the terminal's own background in the
+                // upper half without using the lower-block glyph with seams.
+                (false, true) => print!("{}\x1b[7m▀", colors.sgr(bottom, false)),
+                (true, true) if top == bottom => print!("{} ", colors.sgr(bottom, true)),
                 (true, true) => print!("{}{}▀", colors.sgr(top, false), colors.sgr(bottom, true)),
             }
         }
@@ -232,36 +236,25 @@ pub fn avatar(seed: u64, ascii: bool) {
     }
 }
 fn native_avatar(seed: u64) -> Result<bool> {
-    use ratatui_image::{
-        picker::{Picker, ProtocolType},
-        Image, Resize,
-    };
+    use ratatui_image::picker::{Picker, ProtocolType};
     let protocol = crate::display::Display::detect().images;
     if protocol == ProtocolType::Halfblocks {
         return Ok(false);
     }
     let mut picker = Picker::halfblocks();
     picker.set_protocol_type(protocol);
-    let pixels = crate::avatar::render_subject(seed)
-        .pixels
-        .into_iter()
-        .flatten()
-        .collect();
-    let image = image::DynamicImage::ImageRgba8(
-        image::RgbaImage::from_raw(36, 36, pixels).expect("avatar size"),
-    );
-    let image = picker.new_protocol(
-        image,
-        ratatui::layout::Size::new(18, 9),
-        Resize::Scale(Some(image::imageops::FilterType::Nearest)),
-    )?;
+    let mut pictures = crate::ui::Pictures::new(picker);
     let mut terminal = ratatui::Terminal::with_options(
         ratatui::backend::CrosstermBackend::new(io::stdout()),
         ratatui::TerminalOptions {
             viewport: ratatui::Viewport::Inline(9),
         },
     )?;
-    terminal.draw(|frame| frame.render_widget(Image::new(&image), frame.area()))?;
+    terminal.draw(|frame| {
+        let mut area = frame.area();
+        area.width = area.width.min(18);
+        pictures.draw(frame, seed, area);
+    })?;
     terminal.show_cursor()?;
     println!();
     Ok(true)

@@ -68,6 +68,39 @@ impl Avatar {
             .flat_map(|y| (0..18).map(move |x| self.pixels[(y * 2 + 1) * 36 + x * 2 + 1]))
             .collect()
     }
+    /// Area samples for terminal presentation. A point sample can turn a
+    /// centered one-pixel detail into an asymmetric feature or erase it.
+    pub fn sampled(&self, side: usize) -> Vec<[u8; 4]> {
+        assert!((1..=36).contains(&side));
+        let mut result = Vec::with_capacity(side * side);
+        for y in 0..side {
+            for x in 0..side {
+                let (left, top, right, bottom) = (x * 36, y * 36, (x + 1) * 36, (y + 1) * 36);
+                let mut alpha = 0_u64;
+                let mut rgb = [0_u64; 3];
+                for sy in top / side..bottom.div_ceil(side) {
+                    for sx in left / side..right.div_ceil(side) {
+                        let weight = ((right.min((sx + 1) * side) - left.max(sx * side))
+                            * (bottom.min((sy + 1) * side) - top.max(sy * side)))
+                            as u64;
+                        let p = self.pixels[sy * 36 + sx];
+                        let a = u64::from(p[3]) * weight;
+                        alpha += a;
+                        for i in 0..3 {
+                            rgb[i] += u64::from(p[i]) * a;
+                        }
+                    }
+                }
+                let mut p = [0; 4];
+                for i in 0..3 {
+                    p[i] = (rgb[i] + alpha / 2).checked_div(alpha).unwrap_or(0) as u8;
+                }
+                p[3] = ((alpha + 648) / 1296) as u8;
+                result.push(p);
+            }
+        }
+        result
+    }
 }
 pub fn render(seed: u64) -> Avatar {
     render_impl(seed, true)

@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 pub mod avatar;
 pub mod display;
+mod graphics;
 pub mod ipc;
 #[cfg(target_os = "macos")]
 mod macos;

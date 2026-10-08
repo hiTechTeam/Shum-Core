@@ -349,10 +349,14 @@ pub async fn run(
         match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if crate::ui::is_quit_key(key) {
+                    pictures.clear_graphics(&mut terminal)?;
                     return Ok(created);
                 }
                 match (wizard.step, key.code) {
-                    (Step::Name, KeyCode::Esc) => return Ok(None),
+                    (Step::Name, KeyCode::Esc) => {
+                        pictures.clear_graphics(&mut terminal)?;
+                        return Ok(None);
+                    }
                     (Step::Name, KeyCode::Enter) => {
                         let validation = validate_name(&wizard.name).and_then(|()| {
                             if Profiles::new(root)?
@@ -402,7 +406,10 @@ pub async fn run(
                             create(&root, &name, Some(seed), mode, &settings, keys)
                         }));
                     }
-                    (Step::Done, KeyCode::Enter | KeyCode::Esc) => return Ok(created),
+                    (Step::Done, KeyCode::Enter | KeyCode::Esc) => {
+                        pictures.clear_graphics(&mut terminal)?;
+                        return Ok(created);
+                    }
                     _ => {}
                 }
             }

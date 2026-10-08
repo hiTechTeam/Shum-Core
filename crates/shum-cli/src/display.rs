@@ -29,6 +29,7 @@ pub enum Colors {
 pub struct Display {
     pub colors: Colors,
     pub images: ProtocolType,
+    pub direct_images: bool,
 }
 impl Display {
     pub fn detect() -> Self {
@@ -74,6 +75,7 @@ impl Display {
         Self {
             colors: if rgb { Colors::Rgb } else { Colors::Indexed },
             images,
+            direct_images: program == "WarpTerminal",
         }
     }
 }

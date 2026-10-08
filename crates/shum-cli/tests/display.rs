@@ -8,6 +8,56 @@ use shum_cli::{
 };
 
 #[test]
+fn warp_direct_placement_contains_the_complete_original_avatar() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let display = Display::for_terminal("WarpTerminal", "xterm-256color", "", false, false);
+    let mut picker = Picker::halfblocks();
+    picker.set_protocol_type(display.images);
+    let mut pictures = Pictures::with_display(picker, display);
+    let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+    let wizard = Wizard {
+        step: Step::Avatar,
+        name: "Test".into(),
+        seed: 42,
+        error: String::new(),
+        file_keys: true,
+    };
+    terminal
+        .draw(|frame| {
+            shum_cli::onboarding::draw(frame, &wizard, &mut pictures, false);
+            let data = frame
+                .buffer_mut()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(!data.contains("]1337;"));
+            assert!(
+                !data.contains("U=1"),
+                "Warp does not support Unicode image placeholders"
+            );
+            let (erase, image) = data.split_once("\x1b_Ga=T,").unwrap();
+            assert!(erase.contains("\x1b_Ga=d,d=I,"));
+            let (header, payload) = image.split_once(';').unwrap();
+            assert!(header.contains("c=18,r=9,C=1,q=2"));
+            let png = STANDARD
+                .decode(payload.split_once("\x1b\\").unwrap().0)
+                .unwrap();
+            let pixels = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(pixels.dimensions(), (36, 36));
+            assert_eq!(
+                pixels.into_raw(),
+                shum_cli::avatar::render_subject(42)
+                    .pixels
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+            );
+        })
+        .unwrap();
+}
+
+#[test]
 fn terminal_capabilities_distinguish_apple_terminal_and_warp() {
     for colorterm in ["", "truecolor"] {
         let apple =
@@ -18,6 +68,7 @@ fn terminal_capabilities_distinguish_apple_terminal_and_warp() {
     let warp = Display::for_terminal("WarpTerminal", "xterm-256color", "", false, false);
     assert_eq!(warp.colors, Colors::Rgb);
     assert_eq!(warp.images, ProtocolType::Iterm2);
+    assert!(warp.direct_images);
     assert_eq!(
         Display::for_terminal("", "xterm-256color", "", false, false).colors,
         Colors::Indexed
@@ -73,9 +124,7 @@ fn apple_terminal_frames_use_indexed_colors_and_readable_defaults() {
 }
 
 #[test]
-fn avatar_preview_preserves_every_logical_pixel_and_transparency() {
-    // At 18 columns × 9 rows each half cell is exactly one original 2×2 block.
-    // Sampling the wrong source corner used to erase single-pixel face details.
+fn avatar_preview_preserves_area_samples_and_uses_seamless_cell_backgrounds() {
     for seed in [0, 1, 42, 123, 9001] {
         let mut pictures = Pictures::with_colors(Picker::halfblocks(), Colors::Rgb);
         let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
@@ -89,33 +138,29 @@ fn avatar_preview_preserves_every_logical_pixel_and_transparency() {
         terminal
             .draw(|f| shum_cli::onboarding::draw(f, &wizard, &mut pictures, false))
             .unwrap();
-        let pixels = shum_cli::avatar::render_subject(seed).coarse18();
+        let pixels = shum_cli::avatar::render_subject(seed).sampled(18);
         for y in 0..9 {
             for x in 0..18 {
                 let cell = &terminal.backend().buffer()[(4 + x as u16, 10 + y as u16)];
                 let a = pixels[y * 2 * 18 + x];
                 let b = pixels[(y * 2 + 1) * 18 + x];
-                let rgb = |p: [u8; 4]| Color::Rgb(p[0], p[1], p[2]);
-                match (a[3] > 0, b[3] > 0) {
-                    (true, true) => {
-                        assert_eq!(cell.symbol(), "▀");
-                        assert_eq!(cell.fg, rgb(a));
-                        assert_eq!(cell.bg, rgb(b));
-                    }
-                    (true, false) => {
-                        assert_eq!(cell.symbol(), "▀");
-                        assert_eq!(cell.fg, rgb(a));
-                        assert_eq!(cell.bg, Color::Rgb(10, 13, 11));
-                    }
-                    (false, true) => {
-                        assert_eq!(cell.symbol(), "▄");
-                        assert_eq!(cell.fg, rgb(b));
-                        assert_eq!(cell.bg, Color::Rgb(10, 13, 11));
-                    }
-                    (false, false) => {
-                        assert_eq!(cell.symbol(), " ");
-                        assert_eq!(cell.bg, Color::Rgb(10, 13, 11));
-                    }
+                let rgb = |p: [u8; 4]| {
+                    let c = std::array::from_fn::<_, 3, _>(|i| {
+                        ((u32::from(p[i]) * u32::from(p[3])
+                            + [10, 13, 11][i] * (255 - u32::from(p[3]))
+                            + 127)
+                            / 255) as u8
+                    });
+                    Color::Rgb(c[0], c[1], c[2])
+                };
+                assert_ne!(cell.symbol(), "▄", "avoid lower-block font seams");
+                if rgb(a) == rgb(b) {
+                    assert_eq!(cell.symbol(), " ");
+                    assert_eq!(cell.bg, rgb(b));
+                } else {
+                    assert_eq!(cell.symbol(), "▀");
+                    assert_eq!(cell.fg, rgb(a));
+                    assert_eq!(cell.bg, rgb(b));
                 }
             }
         }
