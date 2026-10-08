@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 pub mod avatar;
 pub mod ipc;
+#[cfg(target_os = "macos")]
+mod macos;
 pub mod onboarding;
 pub mod runtime;
 pub mod service;

@@ -1,14 +1,17 @@
 //! Local authenticated IPC. The daemon alone owns a profile database.
 use crate::runtime::{Command, Request, Runtime};
-use anyhow::{anyhow, bail, Context, Result};
+#[cfg(not(target_os = "macos"))]
+use anyhow::Context;
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use shum_store::profiles::{Profile, Profiles};
+#[cfg(not(target_os = "macos"))]
+use std::process::{Command as Process, Stdio};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::{Command as Process, Stdio},
     time::Duration,
 };
 use tokio::{
@@ -100,7 +103,6 @@ pub async fn ensure(root: &Path, id: &str) -> Result<()> {
     if root.join(id).join("locked").exists() {
         bail!("Профиль заблокирован. Выполните shum unlock.");
     }
-    let executable = std::env::current_exe()?;
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
@@ -109,33 +111,46 @@ pub async fn ensure(root: &Path, id: &str) -> Result<()> {
         options.mode(0o600);
     }
     let log = options.open(root.join(id).join("daemon.log"))?;
-    let mut command = Process::new(executable);
-    command
-        .arg("--data-dir")
-        .arg(root)
-        .arg("--profile")
-        .arg(id)
-        .args(["daemon", "--run"])
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        drop(log);
+        crate::macos::launch(root, id)?;
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x00000008 | 0x08000000);
-    }
-    let mut child = command
-        .spawn()
-        .context("Не удалось запустить службу Shum")?;
-    for _ in 0..100 {
+    #[cfg(not(target_os = "macos"))]
+    let mut child = {
+        let executable = std::env::current_exe()?;
+        let mut command = Process::new(executable);
+        command
+            .arg("--data-dir")
+            .arg(root)
+            .arg("--profile")
+            .arg(id)
+            .args(["daemon", "--run"])
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x00000008 | 0x08000000);
+        }
+        command
+            .spawn()
+            .context("Не удалось запустить службу Shum")?
+    };
+    // On the first macOS launch, reading the profile can wait for the user
+    // to approve Keychain access for the app's new code identity.
+    let startup_seconds = if cfg!(target_os = "macos") { 60 } else { 10 };
+    for _ in 0..startup_seconds * 10 {
         if request(root, id, Request::Snapshot).await.is_ok() {
             return Ok(());
         }
+        #[cfg(not(target_os = "macos"))]
         if child.try_wait()?.is_some() {
             // Another CLI may have won the exclusive profile lock while starting.
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -149,7 +164,10 @@ pub async fn ensure(root: &Path, id: &str) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    bail!("Служба не запустилась за 10 секунд")
+    bail!(
+        "Служба не запустилась за {startup_seconds} секунд. Проверьте системный запрос Shum. Диагностика: {}",
+        root.join(id).join("daemon.log").display()
+    )
 }
 pub async fn stop(root: &Path, id: &str) -> Result<()> {
     if !endpoint(root, id).exists() {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise launchd install/stop for a disposable profile, then remove the launch agent."""
-import json, os, pathlib, shutil, subprocess, sys, tempfile, time
+import json, os, pathlib, plistlib, shutil, subprocess, sys, tempfile, time
 assert sys.platform=='darwin'
 with tempfile.TemporaryDirectory(prefix='shum-launchd-') as directory:
     work=pathlib.Path(directory);root=work/'profiles';binary=work/'shum'
@@ -15,6 +15,9 @@ with tempfile.TemporaryDirectory(prefix='shum-launchd-') as directory:
     try:
         cli('status');old=json.loads((root/pid/'daemon.json').read_text())['pid']
         cli('daemon','--install')
+        launch=plistlib.loads(plist.read_bytes())
+        assert launch['AssociatedBundleIdentifiers']==['org.shum.cli']
+        assert launch['ProgramArguments'][0].endswith('/Shum.app/Contents/MacOS/shum')
         for _ in range(100):
             path=root/pid/'daemon.json'
             if path.exists() and json.loads(path.read_text())['pid']!=old:break

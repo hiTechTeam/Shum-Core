@@ -11,9 +11,11 @@ fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 pub fn install(root: &Path, id: &str) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
     let exe = std::env::current_exe()?;
     #[cfg(target_os = "macos")]
     {
+        let exe = crate::macos::prepare(root)?.join("Contents/MacOS/shum");
         fn xml(value: &str) -> String {
             value
                 .replace('&', "&amp;")
@@ -42,7 +44,7 @@ pub fn install(root: &Path, id: &str) -> Result<()> {
         .map(|s| format!("<string>{}</string>", xml(s)))
         .collect::<String>();
         let log = xml(&root.join(id).join("service.log").display().to_string());
-        let plist=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{args}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string></dict></plist>");
+        let plist=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>AssociatedBundleIdentifiers</key><array><string>org.shum.cli</string></array><key>ProgramArguments</key><array>{args}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>StandardOutPath</key><string>{log}</string><key>StandardErrorPath</key><string>{log}</string></dict></plist>");
         std::fs::write(&file, plist)?;
         let uid = Command::new("id").arg("-u").output()?;
         let uid = std::str::from_utf8(&uid.stdout)?.trim();

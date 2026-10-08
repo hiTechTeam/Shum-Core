@@ -1533,7 +1533,7 @@ pub fn bluetooth_status(snapshot: &Value) -> String {
         .any(|s| s.contains("unauthorized") || s.contains("permission") || s.contains("Permission"))
     {
         return match std::env::consts::OS {
-            "macos" => "Нужен доступ: Настройки macOS → Конфиденциальность → Bluetooth",
+            "macos" => "Разрешите Shum: Настройки macOS → Конфиденциальность → Bluetooth",
             "linux" => "Нет доступа к Bluetooth: проверьте BlueZ и правила D-Bus/Polkit",
             _ => "Нет доступа к Bluetooth: проверьте разрешения в настройках системы",
         }
