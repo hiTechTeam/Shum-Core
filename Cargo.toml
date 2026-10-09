@@ -4,7 +4,6 @@ members = [
     "crates/shum-transport-nostr",
     "crates/shum-transport-ble",
     "crates/shum-store",
-    "crates/shum-cli",
 ]
 resolver = "2"
 
