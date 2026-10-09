@@ -5,7 +5,9 @@ Nostr, хранилище на устройстве. Одна реализаци
 
 Контракт совместимости: спецификация и тестовые примеры из
 [Shum-Protocol](https://github.com/hiTechTeam/Shum-Protocol). Ревизия
-спецификации закреплена в папке `protocol/` через git submodule.
+спецификации закреплена в папке `protocol/` через git submodule. Текущая
+ревизия документации: `8e02c9d`; примеры и байты черновика v1 не изменились.
+Разделы 10–12 описывают будущую v1 stable, а не уже доступные функции ядра.
 
 ## Состояние
 
@@ -118,3 +120,7 @@ submodule.
 
 Ошибки и предложения по ядру присылайте через Issues этого репозитория,
 вопросы по протоколу в [Shum-Protocol](https://github.com/hiTechTeam/Shum-Protocol/issues).
+
+## Лицензия
+
+[MIT](LICENSE), copyright 2026 hiTechTeam.
