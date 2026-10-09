@@ -12,6 +12,8 @@ Multiple devices per profile, history sync and profile relays are planned for v1
 
 ## Packages
 
+Local profiles have independent IDs, keys and databases. Display names may repeat; profile selection, opening and deletion use the profile ID.
+
 | Package | Purpose |
 | :--- | :--- |
 | `shum-core` | Protocol, cryptography and state without I/O |

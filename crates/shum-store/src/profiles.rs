@@ -1,4 +1,5 @@
 //! Independent profiles; registry mutations are serialized across processes.
+//! Display names may repeat. Registry selectors are profile IDs, never names.
 use crate::{
     sqlite::private_options,
     vault::{self, KeyBackend, KeyMode, ProfileKeys},
@@ -59,10 +60,7 @@ impl OpenProfile {
             || name.len() > 64
             || name.trim() != name
             || name.chars().any(char::is_control)
-            || registry
-                .profiles
-                .iter()
-                .any(|p| p.id != self.profile.id && (p.name == name || p.id == name))
+            || registry.profiles.iter().all(|p| p.id != self.profile.id)
         {
             return Err(Error::ProfileName);
         }
@@ -200,7 +198,7 @@ impl Profiles {
         registry
             .profiles
             .iter()
-            .find(|p| (p.id == selector || p.name == selector) && !p.deleting)
+            .find(|p| p.id == selector && !p.deleting)
             .ok_or(Error::ProfileNotFound)
     }
     pub fn list(&self) -> Result<(Option<String>, Vec<Profile>)> {
@@ -233,9 +231,6 @@ impl Profiles {
         }
         let _lock = self.lock()?;
         let mut r = self.read()?;
-        if r.profiles.iter().any(|p| p.name == name || p.id == name) {
-            return Err(Error::ProfileName);
-        }
         let mut random = [0; 16];
         getrandom::fill(&mut random).map_err(|_| Error::Random)?;
         let id = hex::encode(random);
@@ -317,7 +312,7 @@ impl Profiles {
         let index = r
             .profiles
             .iter()
-            .position(|p| p.id == selector || p.name == selector)
+            .position(|p| p.id == selector)
             .ok_or(Error::ProfileNotFound)?;
         let profile = r.profiles[index].clone();
         let directory = self.root.join(&profile.id);

@@ -35,7 +35,7 @@ pub enum Error {
     Permissions,
     #[error("profile not found")]
     ProfileNotFound,
-    #[error("profile name is empty, too long, duplicated or contains controls")]
+    #[error("profile name is empty, too long or contains controls")]
     ProfileName,
     #[error(transparent)]
     Io(#[from] std::io::Error),

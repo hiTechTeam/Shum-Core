@@ -34,22 +34,58 @@ fn profiles_isolate_all_keys_databases_selection_and_deletion() {
     assert!(b.store.state()["privateMemo"].is_null());
     assert!(matches!(profiles.open(Some(&first.id)), Err(Error::Locked)));
     assert!(matches!(profiles.delete(&first.id), Err(Error::Locked)));
-    profiles.select("Рабочий").unwrap();
+    profiles.select(&second.id).unwrap();
     assert_eq!(profiles.list().unwrap().0, Some(second.id.clone()));
-    assert!(profiles.create("Рабочий", KeyMode::File).is_err());
     assert!(profiles.create("../escape\n", KeyMode::File).is_err());
     drop(a);
     drop(b);
     assert_eq!(profiles.open(None).unwrap().profile.id, second.id);
-    let a = profiles.open(Some("Личный")).unwrap();
+    let a = profiles.open(Some(&first.id)).unwrap();
     assert_eq!(a.store.state()["privateMemo"], "first profile only");
     drop(a);
-    profiles.delete("Личный").unwrap();
+    profiles.delete(&first.id).unwrap();
     assert!(!root.join(&first.id).exists());
     assert_eq!(profiles.list().unwrap().1.len(), 1);
     assert!(profiles.open(Some(&first.id)).is_err());
-    profiles.delete("Рабочий").unwrap();
+    profiles.delete(&second.id).unwrap();
     assert_eq!(profiles.list().unwrap(), (None, vec![]));
+}
+
+#[cfg(unix)]
+#[test]
+fn equal_display_names_never_select_or_delete_another_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let profiles = Profiles::new(temp.path().join("profiles")).unwrap();
+    let one = profiles.create("Одинаковое имя", KeyMode::File).unwrap();
+    let two = profiles.create("Одинаковое имя", KeyMode::File).unwrap();
+    assert_ne!(one.id, two.id);
+    assert_ne!(one.owner_id, two.owner_id);
+    assert!(profiles.select("Одинаковое имя").is_err());
+    assert!(profiles.open(Some("Одинаковое имя")).is_err());
+    assert!(profiles.delete("Одинаковое имя").is_err());
+    let open = profiles.open(Some(&one.id)).unwrap();
+    open.check_name(&two.name).unwrap();
+    drop(open);
+    let mut second = profiles.open(Some(&two.id)).unwrap();
+    second
+        .store
+        .transaction(|state| {
+            state["privateMemo"] = json!("second profile history");
+            Ok(())
+        })
+        .unwrap();
+    drop(second);
+    profiles.select(&two.id).unwrap();
+    profiles.delete(&one.id).unwrap();
+    let surviving = profiles.open(None).unwrap();
+    assert_eq!(surviving.profile.id, two.id);
+    assert_eq!(
+        surviving.store.state()["privateMemo"],
+        "second profile history"
+    );
+    drop(surviving);
+    assert_eq!(profiles.list().unwrap().1.len(), 1);
+    profiles.delete(&two.id).unwrap();
 }
 
 #[cfg(unix)]
