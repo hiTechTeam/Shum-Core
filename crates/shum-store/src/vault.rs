@@ -69,7 +69,7 @@ pub struct ProfileKeys {
     pub nostr: Secret32,
     pub storage: Secret32,
 }
-fn random_secret() -> Result<Secret32> {
+pub(crate) fn random_secret() -> Result<Secret32> {
     let mut bytes = Zeroizing::new([0; 32]);
     getrandom::fill(bytes.as_mut()).map_err(|_| Error::Random)?;
     Ok(Secret32::new(*bytes))

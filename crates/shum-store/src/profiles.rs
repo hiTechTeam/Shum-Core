@@ -222,6 +222,17 @@ impl Profiles {
         mode: KeyMode,
         keys: ProfileKeys,
     ) -> Result<Profile> {
+        self.create_with_state(name, mode, keys, None)
+    }
+    /// Like `create_with_keys`, but commits `state` before the profile is
+    /// published, so a failed restore leaves no half-created profile behind.
+    pub(crate) fn create_with_state(
+        &self,
+        name: &str,
+        mode: KeyMode,
+        keys: ProfileKeys,
+        state: Option<serde_json::Value>,
+    ) -> Result<Profile> {
         if name.is_empty()
             || name.len() > 128
             || name.trim() != name
@@ -254,11 +265,14 @@ impl Profiles {
         let mut publishing = false;
         let result = (|| {
             vault::create(backend, &directory, &profile.id, &keys)?;
-            let store = Store::open(
+            let mut store = Store::open(
                 directory.join("messages.sqlite"),
                 &profile.owner_id,
                 keys.storage_key(),
             )?;
+            if let Some(state) = state {
+                store.commit(state)?;
+            }
             store.checkpoint()?;
             drop(store);
             r.profiles.push(profile.clone());

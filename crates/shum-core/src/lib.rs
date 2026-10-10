@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod canonical;
 pub mod card;
 pub mod crypto;

@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod codec;
 pub mod engine;
 mod layout;
@@ -35,6 +36,8 @@ pub enum Error {
     Permissions,
     #[error("profile not found")]
     ProfileNotFound,
+    #[error("a profile with this identity already exists")]
+    ProfileExists,
     #[error("profile name is empty, too long or contains controls")]
     ProfileName,
     #[error(transparent)]
