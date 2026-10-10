@@ -2540,6 +2540,7 @@ version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "fs2",
  "getrandom 0.4.3",
  "hex",
  "serde",
@@ -2548,6 +2549,7 @@ dependencies = [
  "shum-store",
  "shum-transport-ble",
  "shum-transport-nostr",
+ "tempfile",
  "thiserror",
  "tokio",
  "zeroize",

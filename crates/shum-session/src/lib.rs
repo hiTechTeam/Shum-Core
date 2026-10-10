@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contact;
+pub mod service;
 pub mod timeline;
 
 use anyhow::{bail, Context as _, Result};
