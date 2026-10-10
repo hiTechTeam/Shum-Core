@@ -4,6 +4,7 @@ members = [
     "crates/shum-transport-nostr",
     "crates/shum-transport-ble",
     "crates/shum-store",
+    "crates/shum-session",
 ]
 resolver = "2"
 
@@ -18,3 +19,4 @@ shum-core = { path = "crates/shum-core" }
 shum-transport-nostr = { path = "crates/shum-transport-nostr" }
 shum-transport-ble = { path = "crates/shum-transport-ble" }
 shum-store = { path = "crates/shum-store" }
+shum-session = { path = "crates/shum-session" }

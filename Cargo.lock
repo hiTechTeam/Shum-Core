@@ -2535,6 +2535,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "shum-session"
+version = "0.1.5"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "hex",
+ "serde",
+ "serde_json",
+ "shum-core",
+ "shum-store",
+ "shum-transport-ble",
+ "shum-transport-nostr",
+ "thiserror",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "shum-store"
 version = "0.1.5"
 dependencies = [

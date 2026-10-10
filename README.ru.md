@@ -20,6 +20,7 @@
 | `shum-transport-nostr` | Релеи, подписки, доставка и push-запросы |
 | `shum-transport-ble` | Поиск, GATT, Noise и Bluetooth-сетка |
 | `shum-store` | Зашифрованная SQLite и ключи профилей |
+| `shum-session` | Работающий профиль для любого клиента: движок, хранилище, релеи, Bluetooth, push и команды |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) подключает ядро напрямую. Мобильные, десктопные и браузерные клиенты находятся на разных этапах разработки.
 

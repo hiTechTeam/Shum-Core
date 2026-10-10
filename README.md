@@ -20,6 +20,7 @@ Local profiles have independent IDs, keys and databases. Display names may repea
 | `shum-transport-nostr` | Relays, subscriptions, delivery and push requests |
 | `shum-transport-ble` | Discovery, GATT, Noise and Bluetooth mesh |
 | `shum-store` | Encrypted SQLite storage and profile keys |
+| `shum-session` | A running profile for any client: engine, storage, relays, Bluetooth, push and commands |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) uses the core directly. Mobile, desktop and browser integration are at different stages of development.
 
