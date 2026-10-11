@@ -72,7 +72,7 @@ impl Ble {
                         radio::Event::Connected{link,budget,rssi}=>mesh.connected(link,budget,rssi,now()),
                         radio::Event::Disconnected(link)=>Ok(mesh.disconnected(&link)),
                         radio::Event::Data{link,bytes}=>mesh.receive(&link,&bytes,now()),
-                        radio::Event::Rssi(link,rssi)=>{mesh.rssi(&link,Some(rssi),now());Ok(vec![])},
+                        radio::Event::Rssi(link,rssi)=>mesh.measured(&link,rssi,now()),
                         radio::Event::State{role,state}=>{let _=send.send(Update::State{role,state}).await;Ok(vec![])},
                     },
                     Some(command)=requests.recv()=>match command {

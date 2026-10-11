@@ -200,6 +200,27 @@ impl Mesh {
             }
         }
     }
+    /// A local RSSI reading of link `id`. Peers bound to that link get the
+    /// reading too (signal report 0x42): a peripheral cannot read the RSSI of
+    /// the central connected to it, so without this only one side knows the
+    /// distance.
+    pub fn measured(&mut self, id: &str, rssi: i16, now: i64) -> Result<Vec<Effect>> {
+        self.rssi(id, Some(rssi), now);
+        if !(-127..=-1).contains(&rssi) {
+            return Ok(vec![]);
+        }
+        let peers: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.direct.contains(id) && p.session.is_some())
+            .map(|(routing, _)| routing.clone())
+            .collect();
+        let mut effects = Vec::new();
+        for routing in peers {
+            effects.push(self.encrypted(&routing, 0x42, vec![1, rssi as i8 as u8], now)?);
+        }
+        Ok(effects)
+    }
     fn peer_effect(&self, routing: &str, now: i64) -> Option<Effect> {
         let p = self.peers.get(routing)?;
         let session = p.session.as_ref()?;
@@ -457,6 +478,17 @@ impl Mesh {
                         if !p.state_echo {
                             p.state_echo = true;
                             effects.push(self.state(&routing, now)?);
+                        }
+                    }
+                    // Signal report: the peer's RSSI reading of its link to us.
+                    // Only a frame that came straight over a direct link of this
+                    // peer counts; relayed frames say nothing about distance.
+                    0x42 => {
+                        if let [1, value, ..] = body {
+                            let rssi = i16::from(*value as i8);
+                            if p.direct.contains(link) && (-127..=-1).contains(&rssi) {
+                                self.rssi(link, Some(rssi), now);
+                            }
                         }
                     }
                     0x41 => {

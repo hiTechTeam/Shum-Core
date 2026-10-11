@@ -401,3 +401,43 @@ fn offline_engines_exchange_invitation_text_delivery_and_read_over_noise() {
         .unwrap();
     assert_eq!(ea.inbox.messages[0].plaintext.text, "Ответ без релея");
 }
+
+#[test]
+fn the_side_without_rssi_learns_the_distance_from_a_signal_report() {
+    // A is the central and reads RSSI; B is the peripheral and cannot.
+    let (ac, an, asign) = identity(1);
+    let (bc, bn, bsign) = identity(11);
+    let mut a = Mesh::new(ac.clone(), an, asign, vec![], HashSet::new()).unwrap();
+    let mut b = Mesh::new(bc, bn, bsign, vec![], HashSet::new()).unwrap();
+    let initial = a
+        .connected("wire".into(), 180, None, 1000)
+        .unwrap()
+        .into_iter()
+        .map(|e| (true, e))
+        .chain(
+            b.connected("wire".into(), 180, None, 1000)
+                .unwrap()
+                .into_iter()
+                .map(|e| (false, e)),
+        )
+        .collect();
+    deliver(&mut a, &mut b, initial);
+    let distance_at_b = |b: &mut Mesh, now| {
+        b.tick(now).unwrap().into_iter().find_map(|e| match e {
+            Effect::Peer { card, distance, .. } if *card == ac => Some(distance),
+            _ => None,
+        })
+    };
+    assert_eq!(distance_at_b(&mut b, 1000), Some(None), "no reading yet");
+    // -71 dBm: 10^((-59 + 71) / 20) = 3.98, about 4 metres.
+    let report = a.measured("wire", -71, 1500).unwrap();
+    assert_eq!(report.len(), 1);
+    deliver(
+        &mut a,
+        &mut b,
+        report.into_iter().map(|e| (true, e)).collect(),
+    );
+    assert_eq!(distance_at_b(&mut b, 1500), Some(Some(4)));
+    // A reading outside -127..-1 is not reported.
+    assert!(a.measured("wire", 0, 1600).unwrap().is_empty());
+}
