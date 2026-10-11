@@ -19,6 +19,7 @@ pub mod nostr;
 pub mod packet;
 pub mod profile;
 pub mod queue;
+pub mod reaction_art;
 pub mod rules;
 pub mod wire;
 

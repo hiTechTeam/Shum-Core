@@ -472,7 +472,15 @@ impl Session {
             messages.drain(..messages.len() - 2000);
         }
         let reactions:Vec<_>=self.engine.inbox.reactions.iter().map(|((message,person),mark)|json!({"messageID":message,"personID":person,"mark":mark})).collect();
-        let mut snapshot = json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"messages":messages,"events":crate::timeline::stored(self.profile.store.state(), &self.engine),"reactions":reactions,"relays":self.pool.connected(),"bluetooth":self.bluetooth,"pushConfigured":self.push.is_some(),"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":COMMAND_SCHEMA_VERSION});
+        let mut blocked: Vec<_> = self
+            .engine
+            .inbox
+            .blocked_cards
+            .iter()
+            .map(|(id, card)| json!({ "id": id, "card": card }))
+            .collect();
+        blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
+        let mut snapshot = json!({"profile":self.profile.profile,"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.profile.store.state(), &self.engine),"reactions":reactions,"relays":self.pool.connected(),"bluetooth":self.bluetooth,"pushConfigured":self.push.is_some(),"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
