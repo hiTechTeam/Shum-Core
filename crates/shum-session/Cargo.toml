@@ -6,19 +6,43 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Without "native" only the session machine remains, as the browser runs
+# it; native clients get SQLite, tokio relays, Bluetooth and the service.
+[features]
+default = ["native"]
+native = [
+    "shum-store/native",
+    "shum-transport-nostr/native",
+    "dep:shum-transport-ble",
+    "dep:fs2",
+    "dep:tempfile",
+    "dep:tokio",
+]
+
 [dependencies]
 shum-core.workspace = true
-shum-store = { workspace = true, features = ["native"] }
-shum-transport-nostr = { workspace = true, features = ["native"] }
-shum-transport-ble.workspace = true
+shum-store.workspace = true
+shum-transport-nostr.workspace = true
+shum-transport-ble = { workspace = true, optional = true }
 anyhow = "1"
 base64 = "0.22"
-fs2 = "0.4.3"
+fs2 = { version = "0.4.3", optional = true }
 getrandom = "0.4.3"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tempfile = "3.27"
+tempfile = { version = "3.27", optional = true }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"], optional = true }
 zeroize = "1"
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3"
+
+[[test]]
+name = "registration"
+required-features = ["native"]
+
+[[test]]
+name = "service"
+required-features = ["native"]

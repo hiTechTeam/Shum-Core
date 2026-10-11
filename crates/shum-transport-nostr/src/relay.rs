@@ -1,25 +1,30 @@
+//! Relay connections over tokio sockets. What to connect, send and close is
+//! decided by [`Relays`], the machine every client runs; this module only
+//! carries it out and keeps the sockets.
 use crate::{
-    protocol::{self, Incoming},
-    Error, Result,
+    links::{Effect, Relays, Ticket},
+    protocol, Error, Result,
 };
 use futures_util::{SinkExt, StreamExt};
 use shum_core::nostr::Event;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
-    task::JoinSet,
-    time::{timeout, Instant},
+    time::timeout,
 };
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{protocol::WebSocketConfig, Message},
 };
 
-const ACK_TIMEOUT: Duration = Duration::from_secs(10);
+/// The machine answers every publication within ten seconds.
+const ACK_WAIT: Duration = Duration::from_secs(12);
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub enum RelayUpdate {
     Connected(String),
@@ -28,12 +33,17 @@ pub enum RelayUpdate {
     EndOfStoredEvents(String),
 }
 struct Publication {
-    event: Arc<Event>,
+    event: Event,
     reply: Option<oneshot::Sender<bool>>,
 }
-struct Pending {
-    reply: oneshot::Sender<bool>,
-    deadline: Instant,
+enum Socket {
+    Opened,
+    Text(String),
+    Closed,
+}
+enum Outgoing {
+    Text(String),
+    Ping,
 }
 struct Lifetime {
     stop: watch::Sender<bool>,
@@ -45,19 +55,16 @@ impl Drop for Lifetime {
 }
 #[derive(Clone)]
 pub struct RelayPool {
-    senders: Arc<Vec<mpsc::Sender<Publication>>>,
+    publications: mpsc::Sender<Publication>,
     status: watch::Receiver<Vec<String>>,
     _lifetime: Arc<Lifetime>,
 }
-struct Status {
-    url: String,
-    status: watch::Sender<Vec<String>>,
-}
-impl Drop for Status {
-    fn drop(&mut self) {
-        self.status
-            .send_modify(|list| list.retain(|url| *url != self.url));
-    }
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl RelayPool {
@@ -65,27 +72,15 @@ impl RelayPool {
         protocol::validate_urls(urls)
     }
     pub fn start(urls: &[String], public_key: &str) -> Result<(Self, mpsc::Receiver<RelayUpdate>)> {
-        protocol::validate_urls(urls)?;
-        protocol::validate_inbox(public_key)?;
-        let (stop, _) = watch::channel(false);
+        let relays = Relays::new(urls, public_key, true, now())?;
+        let (stop, stopped) = watch::channel(false);
         let (status, status_rx) = watch::channel(Vec::new());
         let (updates, incoming) = mpsc::channel(128);
-        let mut senders = Vec::new();
-        for url in urls {
-            let (send, receive) = mpsc::channel(64);
-            senders.push(send);
-            tokio::spawn(connection(
-                url.clone(),
-                public_key.into(),
-                receive,
-                updates.clone(),
-                stop.subscribe(),
-                status.clone(),
-            ));
-        }
+        let (publications, requests) = mpsc::channel(256);
+        tokio::spawn(drive(relays, requests, updates, stopped, status));
         Ok((
             Self {
-                senders: Arc::new(senders),
+                publications,
                 status: status_rx,
                 _lifetime: Arc::new(Lifetime { stop }),
             },
@@ -100,184 +95,153 @@ impl RelayPool {
         if !event.verify() {
             return Err(Error::Publication);
         }
-        let event = Arc::new(event);
-        let mut pending = JoinSet::new();
-        for sender in self.senders.iter() {
-            let (reply, response) = oneshot::channel();
-            if sender
-                .try_send(Publication {
-                    event: event.clone(),
-                    reply: Some(reply),
-                })
-                .is_ok()
-            {
-                pending.spawn(async move {
-                    matches!(timeout(ACK_TIMEOUT, response).await, Ok(Ok(true)))
-                });
-            }
+        let (reply, response) = oneshot::channel();
+        self.publications
+            .try_send(Publication {
+                event,
+                reply: Some(reply),
+            })
+            .map_err(|_| Error::Queue)?;
+        match timeout(ACK_WAIT, response).await {
+            Ok(Ok(true)) => Ok(()),
+            _ => Err(Error::Publication),
         }
-        while let Some(result) = pending.join_next().await {
-            if matches!(result, Ok(true)) {
-                return Ok(());
-            }
-        }
-        Err(Error::Publication)
     }
     /// Contact lookup uses fire-and-forget publication, as Swift does.
     pub fn publish_unconfirmed(&self, event: Event) -> Result<()> {
         if !event.verify() {
             return Err(Error::Publication);
         }
-        let event = Arc::new(event);
-        let mut sent = false;
-        for sender in self.senders.iter() {
-            sent |= sender
-                .try_send(Publication {
-                    event: event.clone(),
-                    reply: None,
-                })
-                .is_ok();
-        }
-        if sent {
-            Ok(())
-        } else {
-            Err(Error::Queue)
-        }
+        self.publications
+            .try_send(Publication { event, reply: None })
+            .map_err(|_| Error::Queue)
     }
 }
-async fn connection(
-    url: String,
-    public: String,
+
+/// Runs the machine: feeds it publications, socket events and time, and
+/// carries out its effects.
+async fn drive(
+    mut relays: Relays,
     mut publications: mpsc::Receiver<Publication>,
     updates: mpsc::Sender<RelayUpdate>,
     mut stop: watch::Receiver<bool>,
     status: watch::Sender<Vec<String>>,
 ) {
-    let mut backoff = 1;
-    let mut queued = VecDeque::new();
+    let (events, mut sockets) = mpsc::channel::<(usize, u64, Socket)>(256);
+    let mut writers: HashMap<usize, mpsc::Sender<Outgoing>> = HashMap::new();
+    let mut waiting: HashMap<Ticket, oneshot::Sender<bool>> = HashMap::new();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
     loop {
-        if *stop.borrow() {
-            return;
-        }
-        let config = WebSocketConfig::default()
-            .max_message_size(Some(protocol::MAX_MESSAGE))
-            .max_frame_size(Some(protocol::MAX_MESSAGE));
-        let connecting = timeout(
-            Duration::from_secs(8),
-            connect_async_with_config(&url, Some(config), false),
-        );
-        let socket = tokio::select! { result=connecting => result, _=stop.changed() => return };
-        let Ok(Ok((mut socket, _))) = socket else {
-            let _ = updates.try_send(RelayUpdate::Disconnected(url.clone()));
-            tokio::select! { _=tokio::time::sleep(Duration::from_secs(backoff))=>{}, _=stop.changed()=>return }
-            backoff = (backoff * 2).min(60);
-            continue;
-        };
-        backoff = 1;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let request = protocol::subscription(&public, now);
-        if !matches!(
-            timeout(
-                Duration::from_secs(5),
-                socket.send(Message::Text(request.into()))
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
-            continue;
-        }
-        status.send_modify(|list| {
-            if !list.contains(&url) {
-                list.push(url.clone());
-                list.sort();
+        tokio::select! {
+            _ = stop.changed() => return,
+            next = publications.recv() => {
+                let Some(Publication { event, reply }) = next else { return };
+                match relays.publish(&event, reply.is_some(), now()) {
+                    Ok(Some(ticket)) => { if let Some(reply) = reply { waiting.insert(ticket, reply); } }
+                    Ok(None) => {}
+                    Err(_) => { if let Some(reply) = reply { let _ = reply.send(false); } }
+                }
             }
+            Some((relay, attempt, socket)) = sockets.recv() => match socket {
+                Socket::Opened => relays.opened(relay, attempt, now()),
+                Socket::Text(text) => relays.received(relay, attempt, &text, now()),
+                Socket::Closed => relays.closed(relay, attempt, now()),
+            },
+            _ = heartbeat.tick() => relays.tick(now()),
+        }
+        for effect in relays.effects() {
+            match effect {
+                Effect::Connect { relay, attempt } => {
+                    let (writer, outgoing) = mpsc::channel(256);
+                    writers.insert(relay, writer);
+                    let url = relays.url(relay).unwrap_or_default().to_owned();
+                    tokio::spawn(socket(url, relay, attempt, outgoing, events.clone()));
+                }
+                Effect::Send { relay, text } => {
+                    if let Some(writer) = writers.get(&relay) {
+                        let _ = writer.try_send(Outgoing::Text(text));
+                    }
+                }
+                Effect::Ping { relay } => {
+                    if let Some(writer) = writers.get(&relay) {
+                        let _ = writer.try_send(Outgoing::Ping);
+                    }
+                }
+                // Dropping the writer closes the socket.
+                Effect::Close { relay } => {
+                    writers.remove(&relay);
+                }
+                Effect::Connected(url) => {
+                    let _ = updates.try_send(RelayUpdate::Connected(url));
+                }
+                Effect::Disconnected(url) => {
+                    let _ = updates.try_send(RelayUpdate::Disconnected(url));
+                }
+                Effect::Event { relay, event } => {
+                    let _ = updates.try_send(RelayUpdate::Event { relay, event });
+                }
+                Effect::EndOfStoredEvents(url) => {
+                    let _ = updates.try_send(RelayUpdate::EndOfStoredEvents(url));
+                }
+                Effect::Published { ticket, accepted } => {
+                    if let Some(reply) = waiting.remove(&ticket) {
+                        let _ = reply.send(accepted);
+                    }
+                }
+            }
+        }
+        waiting.retain(|_, reply| !reply.is_closed());
+        let connected = relays.connected();
+        status.send_if_modified(|list| {
+            let changed = *list != connected;
+            *list = connected;
+            changed
         });
-        let _connected = Status {
-            url: url.clone(),
-            status: status.clone(),
-        };
-        let _ = updates.try_send(RelayUpdate::Connected(url.clone()));
-        let mut acknowledgements: HashMap<String, Vec<Pending>> = HashMap::new();
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
-        let mut last_ping = Instant::now();
-        let mut last_received = Instant::now();
-        loop {
-            let publication = if let Some(value) = queued.pop_front() {
-                Some(value)
-            } else {
-                tokio::select! {
-                    _=stop.changed()=> { let _=timeout(Duration::from_secs(1),socket.close(None)).await; return; },
-                    next=publications.recv()=> { match next { Some(p)=>Some(p),None=>return } },
-                    message=socket.next()=> {
-                        let Some(Ok(message))=message else { break; }; last_received=Instant::now();
-                        match message {
-                            Message::Text(text)=> match protocol::read(&text,&public) {
-                                Some(Incoming::Event(event))=> { let _=updates.try_send(RelayUpdate::Event { relay:url.clone(),event }); }
-                                Some(Incoming::Ok { id, accepted })=> {
-                                    if let Some(waiters)=acknowledgements.remove(&id) { for pending in waiters { let _=pending.reply.send(accepted); } }
-                                }
-                                Some(Incoming::EndOfStoredEvents)=> { let _=updates.try_send(RelayUpdate::EndOfStoredEvents(url.clone())); }
-                                Some(Incoming::Closed)=>break,
-                                None=>{}
-                            },
-                            Message::Ping(payload)=> { if !matches!(timeout(Duration::from_secs(5),socket.send(Message::Pong(payload))).await,Ok(Ok(()))) { break; } },
-                            Message::Close(_)=>break,
-                            _=>{}
-                        }
-                        None
-                    },
-                    _=heartbeat.tick()=> {
-                        acknowledgements.retain(|_,waiters| { waiters.retain(|p|p.deadline>Instant::now() && !p.reply.is_closed()); !waiters.is_empty() });
-                        if last_received.elapsed()>Duration::from_secs(60) { break; }
-                        if last_ping.elapsed()>=Duration::from_secs(20) { if !matches!(timeout(Duration::from_secs(5),socket.send(Message::Ping(Vec::new().into()))).await,Ok(Ok(()))) { break; } last_ping=Instant::now(); }
-                        None
-                    }
-                }
-            };
-            if let Some(publication) = publication {
-                if publication
-                    .reply
-                    .as_ref()
-                    .is_some_and(oneshot::Sender::is_closed)
-                {
-                    continue;
-                }
-                let Ok(wire) = protocol::publication(&publication.event) else {
-                    continue;
-                };
-                if !matches!(
-                    timeout(
-                        Duration::from_secs(5),
-                        socket.send(Message::Text(wire.into()))
-                    )
-                    .await,
-                    Ok(Ok(()))
-                ) {
-                    if queued.len() < 64 {
-                        queued.push_back(publication);
-                    }
-                    break;
-                }
-                if let Some(reply) = publication.reply {
-                    acknowledgements
-                        .entry(publication.event.id.clone())
-                        .or_default()
-                        .push(Pending {
-                            reply,
-                            deadline: Instant::now() + ACK_TIMEOUT,
-                        });
-                }
-            }
-        }
-        let _ = updates.try_send(RelayUpdate::Disconnected(url.clone()));
-        for waiters in acknowledgements.into_values() {
-            for pending in waiters {
-                let _ = pending.reply.send(false);
-            }
-        }
-        tokio::select! { _=tokio::time::sleep(Duration::from_secs(1))=>{}, _=stop.changed()=>return }
     }
+}
+
+/// One WebSocket: reports opening, text messages and closing, and sends
+/// what the machine asks for until its writer is dropped.
+async fn socket(
+    url: String,
+    relay: usize,
+    attempt: u64,
+    mut outgoing: mpsc::Receiver<Outgoing>,
+    events: mpsc::Sender<(usize, u64, Socket)>,
+) {
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(protocol::MAX_MESSAGE))
+        .max_frame_size(Some(protocol::MAX_MESSAGE));
+    let connecting = connect_async_with_config(&url, Some(config), false);
+    let connected = tokio::select! {
+        result = connecting => Some(result),
+        // Nothing is sent before opening; the writer is dropped when the
+        // machine gives up on this attempt.
+        _ = async { while outgoing.recv().await.is_some() {} } => None,
+    };
+    if let Some(Ok((mut socket, _))) = connected {
+        let _ = events.send((relay, attempt, Socket::Opened)).await;
+        loop {
+            tokio::select! {
+                next = outgoing.recv() => {
+                    let message = match next {
+                        Some(Outgoing::Text(text)) => Message::Text(text.into()),
+                        Some(Outgoing::Ping) => Message::Ping(Vec::new().into()),
+                        None => { let _ = timeout(Duration::from_secs(1), socket.close(None)).await; break; }
+                    };
+                    if !matches!(timeout(SEND_TIMEOUT, socket.send(message)).await, Ok(Ok(()))) { break; }
+                }
+                message = socket.next() => match message {
+                    Some(Ok(Message::Text(text))) => { let _ = events.send((relay, attempt, Socket::Text(text.to_string()))).await; }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if !matches!(timeout(SEND_TIMEOUT, socket.send(Message::Pong(payload))).await, Ok(Ok(()))) { break; }
+                    }
+                    // Any other frame, a pong included, shows the relay is alive.
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => { let _ = events.send((relay, attempt, Socket::Text(String::new()))).await; }
+                },
+            }
+        }
+    }
+    let _ = events.send((relay, attempt, Socket::Closed)).await;
 }

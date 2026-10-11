@@ -8,7 +8,9 @@
 //! goes over them.
 #![forbid(unsafe_code)]
 
+pub mod art;
 pub mod relays;
+pub mod session;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -23,7 +25,7 @@ use wasm_bindgen::prelude::*;
 
 /// A record as the page stores it: the payload in base64.
 #[derive(Serialize, Deserialize)]
-struct Stored {
+pub(crate) struct Stored {
     bucket: String,
     id: String,
     position: i64,
@@ -53,8 +55,33 @@ impl TryFrom<Stored> for Record {
     }
 }
 
-fn error(e: impl std::fmt::Display) -> JsError {
+pub(crate) fn error(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
+}
+
+/// Keys of a profile that does not exist yet. As in every client, keys are
+/// made and checked first; the name and avatar come after.
+#[wasm_bindgen]
+pub struct WebKeys {
+    keys: ProfileKeys,
+}
+
+#[wasm_bindgen]
+impl WebKeys {
+    /// Generates keys and checks that encryption with them works.
+    pub fn prepare() -> Result<WebKeys, JsError> {
+        let keys = ProfileKeys::generate().map_err(error)?;
+        keys.check()
+            .map_err(|_| JsError::new("Не прошла проверка ключей"))?;
+        Ok(Self { keys })
+    }
+
+    /// The avatar a new profile starts with, derived from its signing key,
+    /// as text because JavaScript numbers cannot hold every 64-bit seed.
+    #[wasm_bindgen(js_name = initialSeed)]
+    pub fn initial_seed(&self) -> String {
+        shum_core::crypto::avatar_seed(&self.keys.signing.ed_public()).to_string()
+    }
 }
 
 #[wasm_bindgen]
@@ -66,11 +93,20 @@ pub struct WebProfile {
 
 #[wasm_bindgen]
 impl WebProfile {
-    /// A new profile with fresh keys and a signed card. The page stores
-    /// `records()` and the sealed `keyBundle()` before using it.
-    pub fn create(name: &str, avatar_seed: Option<String>) -> Result<WebProfile, JsError> {
-        let keys = ProfileKeys::generate().map_err(error)?;
+    /// A new profile from prepared keys, with a signed card. The page
+    /// stores `records()` and the sealed `keyBundle()` before using it.
+    pub fn create(
+        keys: WebKeys,
+        name: &str,
+        avatar_seed: Option<String>,
+    ) -> Result<WebProfile, JsError> {
+        let WebKeys { keys } = keys;
         let name = shum_core::card::trim(name);
+        if !shum_core::card::valid_name(name) {
+            return Err(JsError::new(
+                "Имя: 1–64 байта UTF-8, без пробелов по краям (до 32 русских букв)",
+            ));
+        }
         let seed = match avatar_seed {
             Some(seed) => seed.parse::<u64>().map_err(error)?,
             None => shum_core::crypto::avatar_seed(&keys.signing.ed_public()),
@@ -118,6 +154,29 @@ impl WebProfile {
         Ok(profile)
     }
 
+    /// A profile from a backup file (protocol section 13), with a fresh
+    /// storage key. The page stores it like a new profile.
+    pub fn restore(file: &[u8], password: &str) -> Result<WebProfile, JsError> {
+        let opened = shum_store::backup::open(file, password).map_err(|e| match e {
+            shum_store::Error::Authentication
+            | shum_store::Error::Core(shum_core::Error::Authentication) => {
+                JsError::new("Неверный пароль или файл повреждён")
+            }
+            other => error(other),
+        })?;
+        let owner = opened.keys.owner_id();
+        if owner != opened.owner_id {
+            return Err(JsError::new("Это не файл резервной копии Shum"));
+        }
+        let (records, _) =
+            Records::create(&owner, opened.keys.storage_key(), &opened.state).map_err(error)?;
+        Ok(Self {
+            keys: opened.keys,
+            records,
+            pending: None,
+        })
+    }
+
     #[wasm_bindgen(js_name = ownerId)]
     pub fn owner_id(&self) -> String {
         self.keys.owner_id()
@@ -126,6 +185,23 @@ impl WebProfile {
     /// The Nostr public key (hex) whose gift wraps the relays deliver.
     pub fn inbox(&self) -> Result<String, JsError> {
         Ok(hex::encode(self.keys.nostr.nostr_public().map_err(error)?))
+    }
+
+    /// The profile's signed card as JSON, the avatar seed as text because
+    /// JavaScript numbers cannot hold every 64-bit seed.
+    pub fn card(&self) -> Result<String, JsError> {
+        let mut card = self.records.state()["ownProfileCard"].clone();
+        if let Some(seed) = card.get("avatarSeed").and_then(Value::as_u64) {
+            card["avatarSeed"] = seed.to_string().into();
+        }
+        Ok(card.to_string())
+    }
+
+    /// The link that adds this profile as a contact, and its QR code as
+    /// SVG: `{"link": …, "qr": …}`.
+    pub fn invitation(&self) -> Result<String, JsError> {
+        let card: Card = serde_json::from_value(self.records.state()["ownProfileCard"].clone())?;
+        invitation_json(&card)
     }
 
     /// The profile state (protocol section 09) as JSON.
@@ -168,6 +244,31 @@ impl WebProfile {
             self.records.apply(plan);
         }
     }
+}
+
+/// A card's invitation link and its QR code as SVG, as JSON.
+pub(crate) fn invitation_json(card: &Card) -> Result<String, JsError> {
+    let link = card.invitation().map_err(error)?;
+    let qr = qrcode::QrCode::new(link.as_bytes())
+        .map_err(error)?
+        .render::<qrcode::render::svg::Color<'_>>()
+        .quiet_zone(true)
+        .dark_color(qrcode::render::svg::Color("#000000"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok(serde_json::json!({ "link": link, "qr": qr }).to_string())
+}
+
+/// Name and date of a backup file, shown before the password is asked:
+/// `{"profileName": …, "createdAt": …}`.
+#[wasm_bindgen(js_name = backupSummary)]
+pub fn backup_summary(file: &[u8]) -> Result<String, JsError> {
+    let summary = shum_store::backup::summary(file)
+        .map_err(|_| JsError::new("Это не файл резервной копии Shum"))?;
+    Ok(
+        serde_json::json!({"profileName": summary.profile_name, "createdAt": summary.created_at})
+            .to_string(),
+    )
 }
 
 fn plan_json(plan: &Plan) -> Result<String, JsError> {

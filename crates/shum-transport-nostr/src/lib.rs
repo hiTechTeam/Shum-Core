@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod links;
 pub mod protocol;
 pub mod push;
 #[cfg(feature = "native")]

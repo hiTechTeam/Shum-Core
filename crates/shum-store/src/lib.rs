@@ -4,7 +4,6 @@
 
 #![forbid(unsafe_code)]
 
-#[cfg(feature = "native")]
 pub mod backup;
 pub mod codec;
 pub mod engine;

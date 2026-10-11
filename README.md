@@ -17,11 +17,11 @@ Local profiles have independent IDs, keys and databases. Display names may repea
 | Package | Purpose |
 | :--- | :--- |
 | `shum-core` | Protocol, cryptography and state without I/O |
-| `shum-transport-nostr` | Relays, subscriptions, delivery and push requests |
+| `shum-transport-nostr` | Relays, subscriptions, delivery and push requests; one connection machine for every client |
 | `shum-transport-ble` | Discovery, GATT, Noise and Bluetooth mesh |
 | `shum-store` | Encrypted SQLite storage and profile keys |
-| `shum-session` | A running profile for any client: engine, storage, relays, Bluetooth, push and commands |
-| `shum-web` | Shum-Core for the browser (WebAssembly): profiles kept as encrypted records in IndexedDB; built by `scripts/build-web.sh` |
+| `shum-session` | A running profile for any client: one session machine, run natively with tokio, SQLite and Bluetooth or in the browser |
+| `shum-web` | Shum-Core for the browser (WebAssembly): the same session, relays over WebSocket, profiles as encrypted records in IndexedDB; built by `scripts/build-web.sh` |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) uses the core directly. Mobile, desktop and browser integration are at different stages of development.
 

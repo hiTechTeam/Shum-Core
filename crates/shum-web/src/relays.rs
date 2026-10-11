@@ -1,10 +1,13 @@
-//! Relay messages for the page, which keeps the connections itself with the
-//! browser's WebSocket. Shum-Core builds what is sent and checks everything
-//! that arrives, exactly as native clients do.
+//! Relay connections for the page. The page keeps the WebSockets; what to
+//! connect, send and close is decided by the same machine native clients
+//! run ([`Relays`]), and it checks everything that arrives.
 use crate::error;
-use serde_json::json;
+use serde_json::{json, Value};
 use shum_core::nostr::Event;
-use shum_transport_nostr::protocol::{self, Incoming};
+use shum_transport_nostr::{
+    links::{Effect, Relays},
+    protocol,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(js_name = defaultRelays)]
@@ -15,38 +18,95 @@ pub fn default_relays() -> Vec<String> {
         .collect()
 }
 
-/// Fails unless every address is a secure relay address.
-#[wasm_bindgen(js_name = validateRelays)]
-pub fn validate_relays(urls: Vec<String>) -> Result<(), JsError> {
-    protocol::validate_urls(&urls).map_err(error)
+/// The machine for one inbox. Times are milliseconds since 1970
+/// (`Date.now()`). After every call the page carries out `effects()`.
+#[wasm_bindgen]
+pub struct WebRelays {
+    relays: Relays,
 }
 
-/// The first message on a new connection: gift wraps for `inbox` (a Nostr
-/// public key in hex). `now` is in seconds since 1970.
-#[wasm_bindgen(js_name = relaySubscription)]
-pub fn relay_subscription(inbox: &str, now: f64) -> Result<String, JsError> {
-    protocol::validate_inbox(inbox).map_err(error)?;
-    Ok(protocol::subscription(inbox, now.max(0.0) as u64))
+#[wasm_bindgen]
+impl WebRelays {
+    /// Relays for `inbox` (a Nostr public key in hex). The browser cannot
+    /// send WebSocket pings, so the machine does not ask for them.
+    #[wasm_bindgen(constructor)]
+    pub fn new(urls: Vec<String>, inbox: &str, now: f64) -> Result<WebRelays, JsError> {
+        Ok(Self {
+            relays: Relays::new(&urls, inbox, false, now as u64).map_err(error)?,
+        })
+    }
+
+    pub fn url(&self, relay: usize) -> Option<String> {
+        self.relays.url(relay).map(Into::into)
+    }
+
+    pub fn connected(&self) -> Vec<String> {
+        self.relays.connected()
+    }
+
+    /// Publishes a signed event given as JSON. With `confirm` returns the
+    /// ticket a later `published` effect answers.
+    pub fn publish(
+        &mut self,
+        event_json: &str,
+        confirm: bool,
+        now: f64,
+    ) -> Result<Option<f64>, JsError> {
+        let event: Event = serde_json::from_str(event_json)?;
+        let ticket = self
+            .relays
+            .publish(&event, confirm, now as u64)
+            .map_err(error)?;
+        Ok(ticket.map(|t| t as f64))
+    }
+
+    pub fn opened(&mut self, relay: usize, attempt: f64, now: f64) {
+        self.relays.opened(relay, attempt as u64, now as u64);
+    }
+
+    pub fn received(&mut self, relay: usize, attempt: f64, text: &str, now: f64) {
+        self.relays
+            .received(relay, attempt as u64, text, now as u64);
+    }
+
+    pub fn closed(&mut self, relay: usize, attempt: f64, now: f64) {
+        self.relays.closed(relay, attempt as u64, now as u64);
+    }
+
+    pub fn tick(&mut self, now: f64) {
+        self.relays.tick(now as u64);
+    }
+
+    /// What to do now, as a JSON array of `{"type": …}` objects: `connect`
+    /// (relay, attempt), `send` (relay, text), `close` (relay), and the
+    /// news `connected`, `disconnected`, `eose` (relay URL), `event` (relay
+    /// URL, event) and `published` (ticket, accepted).
+    pub fn effects(&mut self) -> String {
+        Value::from(
+            self.relays
+                .effects()
+                .into_iter()
+                .filter_map(effect_json)
+                .collect::<Vec<_>>(),
+        )
+        .to_string()
+    }
 }
 
-/// The message that publishes a signed event given as JSON.
-#[wasm_bindgen(js_name = relayPublication)]
-pub fn relay_publication(event_json: &str) -> Result<String, JsError> {
-    let event: Event = serde_json::from_str(event_json)?;
-    protocol::publication(&event).map_err(error)
-}
-
-/// Reads one relay message for `inbox`, as JSON:
-/// `{"type":"event","event":…}`, `{"type":"ok","id":…,"accepted":…}`,
-/// `{"type":"eose"}` or `{"type":"closed"}`. Anything else, including
-/// events that fail a check, gives `undefined`.
-#[wasm_bindgen(js_name = relayRead)]
-pub fn relay_read(text: &str, inbox: &str) -> Option<String> {
-    let value = match protocol::read(text, inbox)? {
-        Incoming::Event(event) => json!({"type": "event", "event": event}),
-        Incoming::Ok { id, accepted } => json!({"type": "ok", "id": id, "accepted": accepted}),
-        Incoming::EndOfStoredEvents => json!({"type": "eose"}),
-        Incoming::Closed => json!({"type": "closed"}),
-    };
-    Some(value.to_string())
+pub(crate) fn effect_json(effect: Effect) -> Option<Value> {
+    Some(match effect {
+        Effect::Connect { relay, attempt } => {
+            json!({"type": "connect", "relay": relay, "attempt": attempt})
+        }
+        Effect::Send { relay, text } => json!({"type": "send", "relay": relay, "text": text}),
+        Effect::Ping { .. } => return None,
+        Effect::Close { relay } => json!({"type": "close", "relay": relay}),
+        Effect::Connected(url) => json!({"type": "connected", "url": url}),
+        Effect::Disconnected(url) => json!({"type": "disconnected", "url": url}),
+        Effect::EndOfStoredEvents(url) => json!({"type": "eose", "url": url}),
+        Effect::Event { relay, event } => json!({"type": "event", "url": relay, "event": event}),
+        Effect::Published { ticket, accepted } => {
+            json!({"type": "published", "ticket": ticket, "accepted": accepted})
+        }
+    })
 }

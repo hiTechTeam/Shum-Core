@@ -18,6 +18,25 @@ pub(crate) fn random_secret() -> Result<Secret32> {
     Ok(Secret32::new(*bytes))
 }
 impl ProfileKeys {
+    /// Seals and opens a test value with the storage key and checks a
+    /// signature, as every client does with new keys before asking for a name.
+    pub fn check(&self) -> Result<()> {
+        let mut nonce = [0; 12];
+        getrandom::fill(&mut nonce).map_err(|_| Error::Random)?;
+        let challenge = b"shum.registration.check.v1";
+        let sealed = crate::codec::seal(self.storage.expose(), &nonce, challenge, b"")?;
+        if crate::codec::open(self.storage.expose(), &sealed, b"")?.as_slice() != challenge
+            || !shum_core::crypto::verify_ed(
+                &self.signing.ed_public(),
+                &self.signing.sign(challenge),
+                challenge,
+            )
+        {
+            return Err(Error::Authentication);
+        }
+        Ok(())
+    }
+
     pub fn generate() -> Result<Self> {
         let noise = random_secret()?;
         let signing = random_secret()?;

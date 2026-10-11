@@ -1951,6 +1951,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2559,6 +2565,7 @@ dependencies = [
  "fs2",
  "getrandom 0.4.3",
  "hex",
+ "js-sys",
  "serde",
  "serde_json",
  "shum-core",
@@ -2632,12 +2639,15 @@ dependencies = [
 name = "shum-web"
 version = "0.1.5"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "getrandom 0.4.3",
  "hex",
+ "qrcode",
  "serde",
  "serde_json",
  "shum-core",
+ "shum-session",
  "shum-store",
  "shum-transport-nostr",
  "wasm-bindgen",

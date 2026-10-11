@@ -34,15 +34,7 @@ pub fn prepare(root: &Path, mut progress: impl FnMut(usize)) -> Result<ProfileKe
     progress(0);
     let keys = ProfileKeys::generate()?;
     progress(1);
-    let mut nonce = [0; 12];
-    getrandom::fill(&mut nonce)
-        .map_err(|_| Failure::text("Системный генератор случайных чисел недоступен"))?;
-    let challenge = b"shum.registration.check.v1";
-    let encrypted = shum_store::codec::seal(keys.storage.expose(), &nonce, challenge, b"")?;
-    ensure(
-        shum_store::codec::open(keys.storage.expose(), &encrypted, b"")?.as_slice() == challenge,
-        "Не прошла проверка шифрования",
-    )?;
+    ensure(keys.check().is_ok(), "Не прошла проверка ключей")?;
     progress(2);
     Profiles::new(root)?;
     let temporary = tempfile::Builder::new()
@@ -70,14 +62,6 @@ pub fn prepare(root: &Path, mut progress: impl FnMut(usize)) -> Result<ProfileKe
     let stored: Card = serde_json::from_value(reopened.state()["ownProfileCard"].clone())?;
     stored.validate()?;
     ensure(stored == card, "Не прошла проверка защищённого хранилища")?;
-    ensure(
-        shum_core::crypto::verify_ed(
-            &keys.signing.ed_public(),
-            &keys.signing.sign(challenge),
-            challenge,
-        ),
-        "Не прошла проверка ключа профиля",
-    )?;
     drop(reopened);
     temporary.close()?;
     progress(4);
@@ -116,10 +100,7 @@ impl Settings {
 /// A profile name: 1–64 bytes of UTF-8, no spaces at the edges.
 pub fn validate_name(name: &str) -> Result<()> {
     ensure(
-        !name.is_empty()
-            && name.len() <= 64
-            && name.trim() == name
-            && !name.chars().any(char::is_control),
+        shum_core::card::valid_name(name),
         "Имя: 1–64 байта UTF-8, без пробелов по краям (до 32 русских букв)",
     )
 }

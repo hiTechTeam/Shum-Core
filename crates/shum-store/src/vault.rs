@@ -8,7 +8,6 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-pub(crate) use crate::keys::random_secret;
 pub use crate::keys::ProfileKeys;
 
 const SERVICE: &str = "org.shum.cli.profile.v1";

@@ -17,11 +17,11 @@
 | Пакет | Назначение |
 | :--- | :--- |
 | `shum-core` | Протокол, криптография и состояние без ввода-вывода |
-| `shum-transport-nostr` | Релеи, подписки, доставка и push-запросы |
+| `shum-transport-nostr` | Релеи, подписки, доставка и push-запросы; одна логика соединений для всех клиентов |
 | `shum-transport-ble` | Поиск, GATT, Noise и Bluetooth-сетка |
 | `shum-store` | Зашифрованная SQLite и ключи профилей |
-| `shum-session` | Работающий профиль для любого клиента: движок, хранилище, релеи, Bluetooth, push и команды |
-| `shum-web` | Shum-Core для браузера (WebAssembly): профили хранятся зашифрованными записями в IndexedDB; сборка — `scripts/build-web.sh` |
+| `shum-session` | Работающий профиль для любого клиента: одна сессия, которая работает и в нативных клиентах (tokio, SQLite, Bluetooth), и в браузере |
+| `shum-web` | Shum-Core для браузера (WebAssembly): та же сессия, релеи через WebSocket, профили зашифрованными записями в IndexedDB; сборка — `scripts/build-web.sh` |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) подключает ядро напрямую. Мобильные, десктопные и браузерные клиенты находятся на разных этапах разработки.
 

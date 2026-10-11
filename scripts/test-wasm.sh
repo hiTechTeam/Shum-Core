@@ -18,3 +18,5 @@ cargo test -p shum-core --target wasm32-wasip1 "$@"
 cargo test -p shum-store --no-default-features --target wasm32-wasip1 "$@"
 # Relay messages and push signing, without the tokio connections.
 cargo test -p shum-transport-nostr --no-default-features --target wasm32-wasip1 "$@"
+# The session machine, without SQLite, tokio, Bluetooth or the service.
+cargo test -p shum-session --no-default-features --target wasm32-wasip1 "$@"

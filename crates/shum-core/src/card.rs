@@ -42,6 +42,14 @@ pub fn foundation_space(c: char) -> bool {
 pub fn trim(value: &str) -> &str {
     value.trim_matches(foundation_space)
 }
+/// A new profile's name: 1–64 bytes of UTF-8, no spaces at the edges and no
+/// control characters. Every client checks names with this.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.trim() == name
+        && !name.chars().any(char::is_control)
+}
 
 impl Card {
     pub fn id(&self) -> String {
