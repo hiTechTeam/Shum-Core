@@ -6,7 +6,11 @@ use shum_core::{
 };
 fn fixture(name: &str) -> Value {
     serde_json::from_str(
-        &std::fs::read_to_string(format!("../../protocol/vectors/{name}.json")).unwrap(),
+        &std::fs::read_to_string(format!(
+            "{}/../../protocol/vectors/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
     )
     .unwrap()
 }

@@ -1,8 +1,14 @@
 use serde_json::Value;
 use shum_core::{card::Card, packet::*, queue::*};
 fn fixture(name: &str) -> Value {
-    serde_json::from_slice(&std::fs::read(format!("../../protocol/vectors/{name}.json")).unwrap())
-        .unwrap()
+    serde_json::from_slice(
+        &std::fs::read(format!(
+            "{}/../../protocol/vectors/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap(),
+    )
+    .unwrap()
 }
 fn number(v: &Value) -> i64 {
     v.as_i64()

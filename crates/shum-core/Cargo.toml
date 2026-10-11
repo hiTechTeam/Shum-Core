@@ -16,9 +16,8 @@ uniffi = ["dep:uniffi"]
 [dependencies]
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 base64 = "0.22"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize"] }
-flate2 = { version = "1", default-features = false, features = ["zlib"] }
 hex = "0.4"
 hkdf = "0.12"
 hmac = "0.12"
@@ -34,3 +33,11 @@ uniffi = { version = "0.32.2", optional = true, default-features = false }
 url = "2.5"
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
 zeroize = { version = "1", features = ["derive"] }
+
+# Native clients keep the C zlib they have always used; the browser build
+# (WebAssembly) uses the pure Rust backend, which reads the same streams.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
