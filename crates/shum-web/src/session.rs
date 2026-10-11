@@ -6,12 +6,11 @@
 use crate::{error, invitation_json, relays::effect_json, Stored, WebProfile};
 use serde_json::{json, Value};
 use shum_session::{
-    machine::{Effect, Host, Machine},
+    driver::{quote_seeds, Driver, Output},
+    machine::Host,
     Request,
 };
 use shum_store::{keys::ProfileKeys, records::Records};
-use shum_transport_nostr::links::{self, Relays, Ticket};
-use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 /// Storage of an open browser profile: the records live in memory and
@@ -66,30 +65,9 @@ impl Host for WebHost {
     }
 }
 
-/// Avatar seeds are 64-bit; JavaScript numbers would round them.
-fn quote_seeds(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            for (key, item) in map.iter_mut() {
-                if key == "avatarSeed" && item.is_u64() {
-                    *item = Value::String(item.to_string());
-                } else {
-                    quote_seeds(item);
-                }
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(quote_seeds),
-        _ => {}
-    }
-}
-
 #[wasm_bindgen]
 pub struct WebSession {
-    machine: Machine<WebHost>,
-    relays: Relays,
-    tickets: HashMap<Ticket, String>,
-    now: u64,
-    out: Vec<Value>,
+    driver: Driver<WebHost>,
 }
 
 #[wasm_bindgen]
@@ -115,20 +93,13 @@ impl WebSession {
         };
         let mut client = serde_json::Map::new();
         client.insert("owner".into(), "browser".into());
-        let machine = Machine::new(host, false, client).map_err(error)?;
-        let relays = Relays::new(&relays, machine.inbox(), false, now as u64).map_err(error)?;
-        Ok(Self {
-            machine,
-            relays,
-            tickets: HashMap::new(),
-            now: now as u64,
-            out: Vec::new(),
-        })
+        // The browser cannot send WebSocket pings, so the relays get none.
+        let driver = Driver::new(host, false, client, &relays, false, now as u64).map_err(error)?;
+        Ok(Self { driver })
     }
 
     pub fn snapshot(&mut self) -> String {
-        self.machine.set_relays(self.relays.connected());
-        let mut snapshot = self.machine.snapshot();
+        let mut snapshot = self.driver.snapshot();
         quote_seeds(&mut snapshot);
         snapshot.to_string()
     }
@@ -137,111 +108,66 @@ impl WebSession {
     /// `{"error": …}` at once, or `undefined` when the answer comes later as
     /// a `reply` effect with this `id`.
     pub fn request(&mut self, id: f64, request_json: &str, now: f64) -> Option<String> {
-        self.now = now as u64;
-        self.machine.set_relays(self.relays.connected());
         let request: Request = match serde_json::from_str(request_json) {
             Ok(request) => request,
             Err(e) => {
                 return Some(json!({"error": {"kind": "text", "text": e.to_string()}}).to_string())
             }
         };
-        let result = self.machine.request(id as u64, request)?;
+        let result = self.driver.request(id as u64, request, now as u64)?;
         Some(answer(result).to_string())
     }
 
     pub fn opened(&mut self, relay: usize, attempt: f64, now: f64) {
-        self.now = now as u64;
-        self.relays.opened(relay, attempt as u64, self.now);
+        self.driver.opened(relay, attempt as u64, now as u64);
     }
 
     pub fn received(&mut self, relay: usize, attempt: f64, text: &str, now: f64) {
-        self.now = now as u64;
-        self.relays.received(relay, attempt as u64, text, self.now);
+        self.driver
+            .received(relay, attempt as u64, text, now as u64);
     }
 
     pub fn closed(&mut self, relay: usize, attempt: f64, now: f64) {
-        self.now = now as u64;
-        self.relays.closed(relay, attempt as u64, self.now);
+        self.driver.closed(relay, attempt as u64, now as u64);
     }
 
     /// Call about once a second.
     pub fn tick(&mut self, now: f64) {
-        self.now = now as u64;
-        self.relays.tick(self.now);
-        self.machine.set_relays(self.relays.connected());
-        self.machine.tick();
+        self.driver.tick(now as u64);
     }
 
     /// This profile's invitation link and QR code: `{"link": …, "qr": …}`.
     pub fn invitation(&self) -> Result<String, JsError> {
-        invitation_json(&self.machine.engine.inbox.own)
+        invitation_json(&self.driver.machine.engine.inbox.own)
     }
 
     pub fn url(&self, relay: usize) -> Option<String> {
-        self.relays.url(relay).map(Into::into)
+        self.driver.url(relay).map(Into::into)
     }
 
     /// What the page does now, in this order, as a JSON array: `store`
     /// (write, delete) writes to keep first; `renamed` (name); the relay
     /// effects of `WebRelays.effects`; `reply` (id, ok or error).
     pub fn effects(&mut self) -> String {
-        // The two machines feed each other until both are quiet.
-        loop {
-            let mut busy = false;
-            for effect in self.relays.effects() {
-                busy = true;
-                match effect {
-                    links::Effect::Event { event, .. } => {
-                        self.machine.set_relays(self.relays.connected());
-                        self.machine.incoming(*event);
-                    }
-                    links::Effect::Published { ticket, accepted } => {
-                        if let Some(operation) = self.tickets.remove(&ticket) {
-                            self.machine.published(&operation, accepted);
-                        }
-                    }
-                    other => self.out.extend(effect_json(other)),
-                }
-            }
-            for effect in self.machine.effects() {
-                busy = true;
-                match effect {
-                    Effect::Publish { operation, event } => {
-                        let confirm = operation.is_some();
-                        match self.relays.publish(&event, confirm, self.now) {
-                            Ok(Some(ticket)) => {
-                                if let Some(operation) = operation {
-                                    self.tickets.insert(ticket, operation);
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(_) => {
-                                if let Some(operation) = operation {
-                                    self.machine.published(&operation, false);
-                                }
-                            }
-                        }
-                    }
-                    Effect::Reply { id, result } => {
-                        let mut reply = answer(result);
-                        reply["type"] = "reply".into();
-                        reply["id"] = id.into();
-                        self.out.push(reply);
-                    }
-                    // The browser has neither push requests nor Bluetooth.
-                    Effect::Push { .. } | Effect::SendBle { .. } => {}
-                }
-            }
-            if !busy {
-                break;
-            }
-        }
-        let host = &mut self.machine.host;
+        let outputs = self.driver.outputs();
+        let host = &mut self.driver.machine.host;
         let mut all: Vec<Value> = std::mem::take(&mut host.writes);
         if std::mem::take(&mut host.renamed) {
             all.push(json!({"type": "renamed", "name": host.name}));
         }
-        all.append(&mut self.out);
+        for output in outputs {
+            match output {
+                Output::Relay(effect) => all.extend(effect_json(effect)),
+                Output::Reply { id, result } => {
+                    let mut reply = answer(result);
+                    reply["type"] = "reply".into();
+                    reply["id"] = id.into();
+                    all.push(reply);
+                }
+                // The browser has neither push requests nor Bluetooth.
+                Output::Push { .. } | Output::SendBle { .. } => {}
+            }
+        }
         Value::from(all).to_string()
     }
 }

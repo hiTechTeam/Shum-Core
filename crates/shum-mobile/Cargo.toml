@@ -1,0 +1,33 @@
+[package]
+name = "shum-mobile"
+description = "Shum-Core for the iPhone: the shared session over SQLite, with relays and Bluetooth carried out in Swift"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["staticlib", "lib"]
+name = "shum_mobile"
+
+[dependencies]
+shum-core.workspace = true
+shum-session.workspace = true
+shum-store = { workspace = true, features = ["native"] }
+shum-transport-nostr.workspace = true
+anyhow = "1"
+base64 = "0.22"
+getrandom = "0.4"
+hex = "0.4"
+serde_json = "1"
+thiserror = "2"
+uniffi = "0.28"
+
+[[bin]]
+# Generates the Swift bindings: cargo run -p shum-mobile --bin uniffi-bindgen
+name = "uniffi-bindgen"
+path = "src/bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]

@@ -1,0 +1,327 @@
+//! Shum-Core for the iPhone. The profile session is the one every client
+//! runs (`shum_session::driver`); its records live in the same SQLite file
+//! the iOS app already keeps (protocol section 09), opened with the keys the
+//! app keeps in the Keychain. Swift owns the radio, the WebSockets, HTTP and
+//! the clock, and carries out `effects()` in order.
+//!
+//! Requests and answers travel as JSON, the same `Request` commands and
+//! snapshots as the CLI, the desktop app and the browser.
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde_json::{json, Map, Value};
+use shum_core::crypto::Secret32;
+use shum_session::{
+    driver::{Driver, Output},
+    machine::Host,
+    Failure, Request,
+};
+use shum_store::{keys::ProfileKeys, Store};
+use std::sync::{Arc, Mutex};
+
+uniffi::setup_scaffolding!();
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum MobileError {
+    #[error("{0}")]
+    Failed(String),
+}
+fn failed(error: impl std::fmt::Display) -> MobileError {
+    MobileError::Failed(error.to_string())
+}
+
+/// The four private keys of a profile, 32 bytes each, as the Keychain holds
+/// them: Noise static, Ed25519 signing, Nostr and the storage key.
+#[derive(uniffi::Record)]
+pub struct MobileKeys {
+    pub noise: Vec<u8>,
+    pub signing: Vec<u8>,
+    pub nostr: Vec<u8>,
+    pub storage: Vec<u8>,
+}
+
+/// Where and how a profile runs.
+#[derive(uniffi::Record)]
+pub struct MobileProfile {
+    /// The profile's SQLite file (protocol section 09).
+    pub database: String,
+    /// The local profile ID and name.
+    pub id: String,
+    pub name: String,
+    pub relays: Vec<String>,
+    /// Whether Swift sends push requests.
+    pub push: bool,
+    /// JSON object merged into every snapshot, for example the app version.
+    pub client: String,
+}
+
+fn secret(bytes: &[u8]) -> Result<Secret32, MobileError> {
+    let raw: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| failed("Ключ профиля должен быть 32 байта"))?;
+    Ok(Secret32::new(raw))
+}
+
+/// The profile's records in its SQLite file. Every commit is durable before
+/// the session sends anything that follows from it.
+struct StoreHost {
+    id: String,
+    name: String,
+    keys: ProfileKeys,
+    store: Store,
+    renamed: bool,
+}
+
+impl Host for StoreHost {
+    fn keys(&self) -> &ProfileKeys {
+        &self.keys
+    }
+    fn state(&self) -> &Value {
+        self.store.state()
+    }
+    fn commit(&mut self, next: Value) -> anyhow::Result<()> {
+        self.store.commit(next)?;
+        Ok(())
+    }
+    fn profile(&self) -> Value {
+        json!({"id": self.id, "name": self.name, "ownerId": self.keys.owner_id()})
+    }
+    fn renamed(&mut self) -> anyhow::Result<()> {
+        let name = self.store.state()["ownProfileCard"]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        if !name.is_empty() && name != self.name {
+            self.name = name;
+            self.renamed = true;
+        }
+        Ok(())
+    }
+    fn backup(&self, password: &str, created_at: &str) -> anyhow::Result<Vec<u8>> {
+        Ok(shum_store::backup::seal(
+            self.store.state(),
+            &self.keys,
+            &self.name,
+            password,
+            created_at,
+        )?)
+    }
+}
+
+fn answer(result: Result<Value, Failure>) -> Value {
+    match result {
+        Ok(value) => json!({ "ok": value }),
+        Err(failure) => json!({ "error": failure }),
+    }
+}
+
+/// A running profile on the iPhone.
+#[derive(uniffi::Object)]
+pub struct MobileSession {
+    driver: Mutex<Driver<StoreHost>>,
+}
+
+#[uniffi::export]
+impl MobileSession {
+    /// Opens a profile from its SQLite file with its keys and starts the
+    /// session. `now` is milliseconds since 1970.
+    #[uniffi::constructor]
+    pub fn open(
+        profile: MobileProfile,
+        keys: MobileKeys,
+        now: u64,
+    ) -> Result<Arc<Self>, MobileError> {
+        let MobileProfile {
+            database,
+            id,
+            name,
+            relays,
+            push,
+            client,
+        } = profile;
+        let keys = ProfileKeys {
+            noise: secret(&keys.noise)?,
+            signing: secret(&keys.signing)?,
+            nostr: secret(&keys.nostr)?,
+            storage: secret(&keys.storage)?,
+        };
+        let store = Store::open(
+            &database,
+            &keys.owner_id(),
+            Secret32::new(*keys.storage.expose()),
+        )
+        .map_err(failed)?;
+        let host = StoreHost {
+            id,
+            name,
+            keys,
+            store,
+            renamed: false,
+        };
+        let client: Map<String, Value> = serde_json::from_str(&client).unwrap_or_default();
+        let driver = Driver::new(host, push, client, &relays, true, now).map_err(failed)?;
+        Ok(Arc::new(Self {
+            driver: Mutex::new(driver),
+        }))
+    }
+
+    pub fn snapshot(&self) -> String {
+        self.lock().snapshot().to_string()
+    }
+
+    /// Handles a request given as JSON. Returns `{"ok": …}` or
+    /// `{"error": …}` at once, or nothing when the answer comes later as a
+    /// `reply` effect with this `id`.
+    pub fn request(&self, id: u64, request: String, now: u64) -> Option<String> {
+        let request: Request = match serde_json::from_str(&request) {
+            Ok(request) => request,
+            Err(e) => {
+                return Some(json!({"error": {"kind": "text", "text": e.to_string()}}).to_string())
+            }
+        };
+        let result = self.lock().request(id, request, now)?;
+        Some(answer(result).to_string())
+    }
+
+    pub fn opened(&self, relay: u32, attempt: u64, now: u64) {
+        self.lock().opened(relay as usize, attempt, now);
+    }
+
+    pub fn received(&self, relay: u32, attempt: u64, text: String, now: u64) {
+        self.lock().received(relay as usize, attempt, &text, now);
+    }
+
+    pub fn closed(&self, relay: u32, attempt: u64, now: u64) {
+        self.lock().closed(relay as usize, attempt, now);
+    }
+
+    /// Call about once a second.
+    pub fn tick(&self, now: u64) {
+        self.lock().tick(now);
+    }
+
+    pub fn url(&self, relay: u32) -> Option<String> {
+        self.lock().url(relay as usize).map(Into::into)
+    }
+
+    /// The push service answered for `event`; `error` says why it failed.
+    pub fn pushed(&self, event: String, error: Option<String>) {
+        self.lock().pushed(&event, error);
+    }
+
+    /// What Swift does now, in order, as a JSON array of `{"type": …}`:
+    /// `connect` (relay, attempt), `send` (relay, text), `ping` (relay),
+    /// `close` (relay); news `connected`, `disconnected`, `eose` (url);
+    /// `renamed` (name); `reply` (id, ok or error); `push` (event, path,
+    /// headers, body in base64) to POST to the push service; `ble` (peer,
+    /// packet) for a nearby device.
+    pub fn effects(&self, now: u64) -> String {
+        let mut driver = self.lock();
+        let outputs = driver.outputs();
+        let mut all = Vec::new();
+        let host = &mut driver.machine.host;
+        if std::mem::take(&mut host.renamed) {
+            all.push(json!({"type": "renamed", "name": host.name}));
+        }
+        for output in outputs {
+            match output {
+                Output::Relay(effect) => all.extend(relay_json(effect)),
+                Output::Reply { id, result } => {
+                    let mut reply = answer(result);
+                    reply["type"] = "reply".into();
+                    reply["id"] = id.into();
+                    all.push(reply);
+                }
+                Output::Push {
+                    card,
+                    key,
+                    recipient,
+                    event,
+                    kind,
+                } => match push_json(&card, &key, &recipient, &event, kind, now) {
+                    Ok(push) => all.push(push),
+                    Err(error) => driver.pushed(&event, Some(error.to_string())),
+                },
+                Output::SendBle { peer, packet } => all.push(json!({
+                    "type": "ble",
+                    "peer": peer,
+                    "packet": packet,
+                })),
+            }
+        }
+        Value::from(all).to_string()
+    }
+}
+
+impl MobileSession {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Driver<StoreHost>> {
+        self.driver.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn relay_json(effect: shum_transport_nostr::links::Effect) -> Option<Value> {
+    use shum_transport_nostr::links::Effect;
+    Some(match effect {
+        Effect::Connect { relay, attempt } => {
+            json!({"type": "connect", "relay": relay, "attempt": attempt})
+        }
+        Effect::Send { relay, text } => json!({"type": "send", "relay": relay, "text": text}),
+        Effect::Ping { relay } => json!({"type": "ping", "relay": relay}),
+        Effect::Close { relay } => json!({"type": "close", "relay": relay}),
+        Effect::Connected(url) => json!({"type": "connected", "url": url}),
+        Effect::Disconnected(url) => json!({"type": "disconnected", "url": url}),
+        Effect::EndOfStoredEvents(url) => json!({"type": "eose", "url": url}),
+        // Events and publication results stay inside the session.
+        Effect::Event { .. } | Effect::Published { .. } => return None,
+    })
+}
+
+/// A signed push request (protocol section 08), ready to POST.
+fn push_json(
+    card: &shum_core::card::Card,
+    key: &Secret32,
+    recipient: &str,
+    event: &str,
+    kind: shum_core::queue::PushKind,
+    now: u64,
+) -> anyhow::Result<Value> {
+    use shum_transport_nostr::push;
+    let body = push::notification_body(card, recipient, event, kind)?;
+    let mut nonce = [0; 16];
+    getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("random source unavailable"))?;
+    let signed = push::signed_request(
+        "POST",
+        "/v1/notifications",
+        body,
+        key,
+        (now / 1000) as i64,
+        &hex::encode(nonce),
+    )?;
+    Ok(json!({
+        "type": "push",
+        "event": event,
+        "path": "/v1/notifications",
+        "headers": {
+            "Content-Type": "application/json",
+            "X-Shum-Public-Key": signed.public_key,
+            "X-Shum-Timestamp": signed.timestamp,
+            "X-Shum-Nonce": signed.nonce,
+            "X-Shum-Signature": signed.signature,
+        },
+        "body": STANDARD.encode(signed.body),
+    }))
+}
+
+/// Shum-Core's version of the request API, for checks from Swift.
+#[uniffi::export]
+pub fn command_schema_version() -> u64 {
+    shum_session::COMMAND_SCHEMA_VERSION
+}
+
+/// The v1 pixel avatar as 36x36 RGBA bytes.
+#[uniffi::export]
+pub fn avatar_pixels(seed: u64) -> Vec<u8> {
+    shum_core::avatar::render(seed)
+        .pixels
+        .into_iter()
+        .flatten()
+        .collect()
+}

@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contact;
+pub mod driver;
 pub mod machine;
 #[cfg(feature = "native")]
 pub mod registration;

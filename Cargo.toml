@@ -6,6 +6,7 @@ members = [
     "crates/shum-store",
     "crates/shum-session",
     "crates/shum-web",
+    "crates/shum-mobile",
 ]
 resolver = "2"
 
@@ -21,3 +22,12 @@ shum-transport-nostr = { path = "crates/shum-transport-nostr", default-features 
 shum-transport-ble = { path = "crates/shum-transport-ble" }
 shum-store = { path = "crates/shum-store", default-features = false }
 shum-session = { path = "crates/shum-session", default-features = false }
+
+# The browser downloads Shum-Core on first open, so its build favours size:
+# scripts/build-web.sh builds shum-web with this profile.
+[profile.web]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
