@@ -4,7 +4,11 @@
 //! Saving is two steps: [`WebProfile::plan`] says what to write and delete,
 //! the page stores that in one IndexedDB transaction, then calls
 //! [`WebProfile::applied`]. Nothing is published to memory before that.
+//! Relay connections are the page's too; [`relays`] builds and checks what
+//! goes over them.
 #![forbid(unsafe_code)]
+
+pub mod relays;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -117,6 +121,11 @@ impl WebProfile {
     #[wasm_bindgen(js_name = ownerId)]
     pub fn owner_id(&self) -> String {
         self.keys.owner_id()
+    }
+
+    /// The Nostr public key (hex) whose gift wraps the relays deliver.
+    pub fn inbox(&self) -> Result<String, JsError> {
+        Ok(hex::encode(self.keys.nostr.nostr_public().map_err(error)?))
     }
 
     /// The profile state (protocol section 09) as JSON.

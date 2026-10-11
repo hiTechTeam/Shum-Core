@@ -8,6 +8,7 @@ use shum_core::{
     crypto::{sha256, Secret32},
     queue::PushKind,
 };
+#[cfg(feature = "native")]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub struct SignedRequest {
@@ -77,11 +78,13 @@ pub fn notification_body(
         &json!({"card":card_dto(card)?,"recipient_id":recipient,"event_id":event,"kind":kind}),
     )?)
 }
+#[cfg(feature = "native")]
 #[derive(Clone)]
 pub struct PushClient {
     client: reqwest::Client,
     base: url::Url,
 }
+#[cfg(feature = "native")]
 impl PushClient {
     pub fn new(base: &str) -> Result<Self> {
         let base = url::Url::parse(base).map_err(|_| Error::Configuration)?;

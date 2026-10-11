@@ -16,3 +16,5 @@ export CFLAGS_wasm32_wasip1="-Dmemmove=__builtin_memmove"
 cargo test -p shum-core --target wasm32-wasip1 "$@"
 # Storage without SQLite, as the browser uses it.
 cargo test -p shum-store --no-default-features --target wasm32-wasip1 "$@"
+# Relay messages and push signing, without the tokio connections.
+cargo test -p shum-transport-nostr --no-default-features --target wasm32-wasip1 "$@"

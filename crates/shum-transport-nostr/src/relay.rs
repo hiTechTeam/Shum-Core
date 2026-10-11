@@ -1,6 +1,8 @@
-use crate::{Error, Result};
+use crate::{
+    protocol::{self, Incoming},
+    Error, Result,
+};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
 use shum_core::nostr::Event;
 use std::{
     collections::{HashMap, VecDeque},
@@ -17,13 +19,6 @@ use tokio_tungstenite::{
     tungstenite::{protocol::WebSocketConfig, Message},
 };
 
-pub const DEFAULT_RELAYS: &[&str] = &[
-    "wss://nostr.oxtr.dev",
-    "wss://soloco.nl",
-    "wss://relay.snort.social",
-    "wss://nostr.bitcoiner.social",
-];
-const SUBSCRIPTION: &str = "shum-private-v1";
 const ACK_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug)]
 pub enum RelayUpdate {
@@ -67,29 +62,11 @@ impl Drop for Status {
 
 impl RelayPool {
     pub fn validate_urls(urls: &[String]) -> Result<()> {
-        if urls.is_empty() || urls.len() > 16 {
-            return Err(Error::Configuration);
-        }
-        for value in urls {
-            let parsed = url::Url::parse(value).map_err(|_| Error::Configuration)?;
-            let local_plain = parsed.scheme() == "ws"
-                && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
-            if (parsed.scheme() != "wss" && !local_plain)
-                || parsed.host_str().is_none()
-                || !parsed.username().is_empty()
-                || parsed.password().is_some()
-                || parsed.fragment().is_some()
-            {
-                return Err(Error::Configuration);
-            }
-        }
-        Ok(())
+        protocol::validate_urls(urls)
     }
     pub fn start(urls: &[String], public_key: &str) -> Result<(Self, mpsc::Receiver<RelayUpdate>)> {
-        Self::validate_urls(urls)?;
-        if public_key.len() != 64 || hex::decode(public_key).is_err() {
-            return Err(Error::Configuration);
-        }
+        protocol::validate_urls(urls)?;
+        protocol::validate_inbox(public_key)?;
         let (stop, _) = watch::channel(false);
         let (status, status_rx) = watch::channel(Vec::new());
         let (updates, incoming) = mpsc::channel(128);
@@ -183,8 +160,8 @@ async fn connection(
             return;
         }
         let config = WebSocketConfig::default()
-            .max_message_size(Some(256 * 1024))
-            .max_frame_size(Some(256 * 1024));
+            .max_message_size(Some(protocol::MAX_MESSAGE))
+            .max_frame_size(Some(protocol::MAX_MESSAGE));
         let connecting = timeout(
             Duration::from_secs(8),
             connect_async_with_config(&url, Some(config), false),
@@ -200,11 +177,8 @@ async fn connection(
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs()
-            .saturating_sub(3 * 86400);
-        let request =
-            json!(["REQ",SUBSCRIPTION,{"kinds":[1059],"#p":[public],"since":now,"limit":100}])
-                .to_string();
+            .as_secs();
+        let request = protocol::subscription(&public, now);
         if !matches!(
             timeout(
                 Duration::from_secs(5),
@@ -240,27 +214,15 @@ async fn connection(
                     message=socket.next()=> {
                         let Some(Ok(message))=message else { break; }; last_received=Instant::now();
                         match message {
-                            Message::Text(text)=> {
-                                if let Ok(value)=serde_json::from_str::<Value>(&text) {
-                                    match value[0].as_str() {
-                                        Some("EVENT") if value[1].as_str()==Some(SUBSCRIPTION) && value.as_array().is_some_and(|a|a.len()==3)=> {
-                                            if let Ok(event)=serde_json::from_value::<Event>(value[2].clone()) {
-                                                if event.kind==1059 && event.tags==vec![vec!["p".to_owned(),public.clone()]] && event.content.len()<=65536 && event.verify() {
-                                                    let _=updates.try_send(RelayUpdate::Event { relay:url.clone(),event:Box::new(event) });
-                                                }
-                                            }
-                                        }
-                                        Some("OK")=> {
-                                            if let Some(id)=value[1].as_str() {
-                                                if let Some(waiters)=acknowledgements.remove(id) { for pending in waiters { let _=pending.reply.send(value[2].as_bool()==Some(true)); } }
-                                            }
-                                        }
-                                        Some("EOSE") if value[1].as_str()==Some(SUBSCRIPTION)=> { let _=updates.try_send(RelayUpdate::EndOfStoredEvents(url.clone())); }
-                                        Some("CLOSED") if value[1].as_str()==Some(SUBSCRIPTION)=>break,
-                                        _=>{}
-                                    }
+                            Message::Text(text)=> match protocol::read(&text,&public) {
+                                Some(Incoming::Event(event))=> { let _=updates.try_send(RelayUpdate::Event { relay:url.clone(),event }); }
+                                Some(Incoming::Ok { id, accepted })=> {
+                                    if let Some(waiters)=acknowledgements.remove(&id) { for pending in waiters { let _=pending.reply.send(accepted); } }
                                 }
-                            }
+                                Some(Incoming::EndOfStoredEvents)=> { let _=updates.try_send(RelayUpdate::EndOfStoredEvents(url.clone())); }
+                                Some(Incoming::Closed)=>break,
+                                None=>{}
+                            },
                             Message::Ping(payload)=> { if !matches!(timeout(Duration::from_secs(5),socket.send(Message::Pong(payload))).await,Ok(Ok(()))) { break; } },
                             Message::Close(_)=>break,
                             _=>{}
@@ -283,7 +245,9 @@ async fn connection(
                 {
                     continue;
                 }
-                let wire = json!(["EVENT", publication.event.as_ref()]).to_string();
+                let Ok(wire) = protocol::publication(&publication.event) else {
+                    continue;
+                };
                 if !matches!(
                     timeout(
                         Duration::from_secs(5),

@@ -2634,10 +2634,12 @@ version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
+ "hex",
  "serde",
  "serde_json",
  "shum-core",
  "shum-store",
+ "shum-transport-nostr",
  "wasm-bindgen",
 ]
 

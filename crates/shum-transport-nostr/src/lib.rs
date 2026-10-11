@@ -2,9 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod protocol;
 pub mod push;
+#[cfg(feature = "native")]
 mod relay;
-pub use relay::{RelayPool, RelayUpdate, DEFAULT_RELAYS};
+pub use protocol::DEFAULT_RELAYS;
+#[cfg(feature = "native")]
+pub use relay::{RelayPool, RelayUpdate};
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
@@ -23,6 +27,7 @@ pub enum Error {
     Core(#[from] shum_core::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[cfg(feature = "native")]
     #[error(transparent)]
     Http(#[from] reqwest::Error),
 }
