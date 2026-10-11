@@ -1,15 +1,10 @@
 //! Projection between the pure engine and the existing iOS database schema.
-use crate::{Error, Result, Store};
+#[cfg(feature = "native")]
+use crate::Store;
+use crate::{Error, Result};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Map, Value};
-use shum_core::{
-    card::Card,
-    crypto::Secret32,
-    engine::{Engine, Transition},
-    packet::*,
-    queue::*,
-    rules::*,
-};
+use shum_core::{card::Card, crypto::Secret32, engine::Engine, packet::*, queue::*, rules::*};
 use std::collections::{HashMap, HashSet};
 const EPOCH: f64 = 978_307_200.0;
 const PAST: f64 = -63_114_076_800.0;
@@ -631,10 +626,11 @@ fn put_message(
     Ok(())
 }
 /// Returns network actions only after the full state is durable.
+#[cfg(feature = "native")]
 pub fn commit_transition(
     store: &mut Store,
     live: &mut Engine,
-    transition: Transition,
+    transition: shum_core::engine::Transition,
     now: i64,
 ) -> Result<Vec<Action>> {
     let next = project(store.state(), &transition.state, now)?;

@@ -1,24 +1,30 @@
 [package]
 name = "shum-store"
-description = "Encrypted SQLite persistence compatible with Shum iOS"
+description = "Encrypted profile storage compatible with Shum iOS: SQLite natively, any record store in the browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Files, SQLite and the system key store. The browser build turns it off and
+# keeps the same encrypted records in IndexedDB (see `records`).
+default = ["native"]
+native = ["dep:rusqlite", "dep:fs2", "dep:tempfile"]
+
 [dependencies]
 shum-core.workspace = true
 base64 = "0.22.1"
-chacha20poly1305 = "0.10.1"
-aes-gcm = "0.10.3"
-fs2 = "0.4.3"
+chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+fs2 = { version = "0.4.3", optional = true }
 getrandom = "0.4.3"
 hex = "0.4.3"
 hmac = "0.12.1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 serde_json = "1.0"
 sha2 = "0.10.9"
-tempfile = "3.27"
+tempfile = { version = "3.27", optional = true }
 thiserror = "2.0"
 zeroize = "1.8"
 serde = { version = "1.0", features = ["derive"] }
@@ -31,3 +37,20 @@ keyring = { version = "3.6.3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
+# These tests open real SQLite files and system key stores.
+[[test]]
+name = "storage"
+required-features = ["native"]
+
+[[test]]
+name = "backup"
+required-features = ["native"]
+
+[[test]]
+name = "profiles"
+required-features = ["native"]
+
+[[example]]
+name = "storage_roundtrip"
+required-features = ["native"]

@@ -1,26 +1,19 @@
-use crate::{codec, layout, Error, Result};
+//! Native storage: the encrypted records of [`crate::records`] in SQLite.
+use crate::{
+    codec, layout,
+    records::{Record, Records},
+    Error, Result,
+};
 use fs2::FileExt;
 use rusqlite::{params, types::ValueRef, Connection, OpenFlags, TransactionBehavior};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use shum_core::crypto::Secret32;
 use std::{
-    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
-
-#[derive(Clone)]
-struct Row {
-    bucket: String,
-    index: String,
-    real_id: String,
-    position: i64,
-    value: Value,
-    cipher: Vec<u8>,
-}
-type Rows = BTreeMap<(String, String), Row>;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     pub transactions: u64,
@@ -32,10 +25,7 @@ pub struct CommitStats {
 /// A failed commit leaves `state()` and all cached records unchanged.
 pub struct Store {
     connection: Connection,
-    key: Secret32,
-    owner: String,
-    state: Value,
-    rows: Rows,
+    records: Records,
     data_version: i64,
     stats: CommitStats,
     _lock: File,
@@ -81,146 +71,48 @@ fn configure(db: &Connection) -> Result<()> {
 fn version(db: &Connection) -> Result<i64> {
     Ok(db.query_row("PRAGMA data_version", [], |r| r.get(0))?)
 }
-fn make_row(
-    key: &[u8; 32],
-    bucket: &str,
-    real_id: &str,
-    position: i64,
-    value: Value,
-) -> Result<Row> {
-    let index = codec::index_id(key, bucket, real_id);
-    let json = zeroize::Zeroizing::new(serde_json::to_vec(&value)?);
-    let packed = codec::pack(real_id, &json)?;
-    let cipher = codec::seal(
-        key,
-        &codec::random_nonce()?,
-        &packed,
-        &codec::aad(bucket, &index, position),
-    )?;
-    Ok(Row {
-        bucket: bucket.into(),
-        index,
-        real_id: real_id.into(),
-        position,
-        value,
-        cipher,
-    })
-}
-fn write_row(db: &Connection, row: &Row) -> Result<()> {
-    db.execute("INSERT INTO records(bucket,id,position,payload) VALUES (?1,?2,?3,?4) ON CONFLICT(bucket,id) DO UPDATE SET position=excluded.position,payload=excluded.payload", params![row.bucket, row.index, row.position, row.cipher])?;
+fn write_row(db: &Connection, record: &Record) -> Result<()> {
+    db.execute("INSERT INTO records(bucket,id,position,payload) VALUES (?1,?2,?3,?4) ON CONFLICT(bucket,id) DO UPDATE SET position=excluded.position,payload=excluded.payload", params![record.bucket, record.id, record.position, record.payload])?;
     Ok(())
 }
-fn load(db: &mut Connection, key: &[u8; 32], owner: &str) -> Result<(Value, Rows, i64)> {
+fn load(db: &mut Connection, key: Secret32, owner: &str) -> Result<(Records, i64)> {
     let before_version = version(db)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Deferred)?;
     if tx.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? != 1 {
         return Err(Error::Invalid("SQLite schema version"));
     }
-    let mut result = Rows::new();
+    let mut stored = Vec::new();
     let mut total = 0usize;
     {
         let mut query =
             tx.prepare("SELECT bucket,id,position,payload FROM records ORDER BY bucket,position")?;
         let mut cursor = query.query([])?;
-        while let Some(record) = cursor.next()? {
-            let bucket: String = record.get(0)?;
-            let index: String = record.get(1)?;
-            let position: i64 = record.get(2)?;
-            if bucket.len() > 64 || index.len() > 64 {
-                return Err(Error::Invalid("record index size"));
-            }
-            let ValueRef::Blob(cipher) = record.get_ref(3)? else {
+        while let Some(row) = cursor.next()? {
+            let ValueRef::Blob(payload) = row.get_ref(3)? else {
                 return Err(Error::Invalid("record payload type"));
             };
+            // Stop reading early; Records checks the same limit again.
             total = total
-                .checked_add(cipher.len())
+                .checked_add(payload.len())
                 .ok_or(Error::Invalid("database size"))?;
             if total > codec::MAX_BYTES {
                 return Err(Error::Invalid("database size"));
             }
-            let plain = codec::open(key, cipher, &codec::aad(&bucket, &index, position))?;
-            let (real_id, json) = codec::unpack(&plain)?;
-            if codec::index_id(key, &bucket, real_id) != index {
-                return Err(Error::Authentication);
-            }
-            let value: Value = serde_json::from_slice(json)?;
-            let row = Row {
-                bucket: bucket.clone(),
-                index,
-                real_id: real_id.into(),
-                position,
-                value,
-                cipher: cipher.to_vec(),
-            };
-            if result.insert((bucket, real_id.into()), row).is_some() {
-                return Err(Error::Invalid("duplicate row"));
-            }
+            stored.push(Record {
+                bucket: row.get(0)?,
+                id: row.get(1)?,
+                position: row.get(2)?,
+                payload: payload.to_vec(),
+            });
         }
     }
-    let root = result
-        .get(&("header".into(), "root".into()))
-        .ok_or(Error::Invalid("missing header"))?;
-    if root.position != 0 || result.values().filter(|r| r.bucket == "header").count() != 1 {
-        return Err(Error::Invalid("header position or count"));
-    }
-    let mut state = root.value["state"].clone();
-    layout::validate(&state, owner)?;
-    let counts = root.value["counts"]
-        .as_object()
-        .ok_or(Error::Invalid("header counts"))?;
-    let mut known: HashSet<&str> = layout::ARRAYS.iter().map(|(name, _, _)| *name).collect();
-    known.extend(layout::DICTS.iter().map(|(name, _)| *name));
-    if counts.len() != known.len()
-        || counts.keys().any(|s| !known.contains(s.as_str()))
-        || result
-            .values()
-            .any(|r| r.bucket != "header" && !known.contains(r.bucket.as_str()))
-    {
-        return Err(Error::Invalid("unknown or missing bucket"));
-    }
-    for bucket in &known {
-        if counts[*bucket].as_u64()
-            != Some(result.values().filter(|r| r.bucket == *bucket).count() as u64)
-        {
-            return Err(Error::Invalid("row count"));
-        }
-    }
-    for &(bucket, _, required) in layout::ARRAYS {
-        let mut rows: Vec<_> = result.values().filter(|r| r.bucket == bucket).collect();
-        rows.sort_by_key(|r| r.position);
-        let mut last = -1;
-        for row in &rows {
-            if row.position <= last || layout::row_id(bucket, &row.value)? != row.real_id {
-                return Err(Error::Invalid("array position or ID"));
-            }
-            last = row.position;
-        }
-        if required || !layout::field(&state, bucket).is_null() {
-            layout::set_field(
-                &mut state,
-                bucket,
-                rows.into_iter().map(|r| r.value.clone()).collect(),
-            );
-        }
-    }
-    for &(bucket, required) in layout::DICTS {
-        let mut dict = Map::new();
-        for row in result.values().filter(|r| r.bucket == bucket) {
-            if row.position != 0 {
-                return Err(Error::Invalid("dictionary position"));
-            }
-            dict.insert(row.real_id.clone(), row.value.clone());
-        }
-        if required || !state[bucket].is_null() {
-            state[bucket] = dict.into();
-        }
-    }
+    let records = Records::load(owner, key, stored)?;
     let data_version = version(&tx)?;
     tx.commit()?;
     if before_version != data_version || version(db)? != data_version {
         return Err(Error::Conflict);
     }
-    Ok((state, result, data_version))
+    Ok((records, data_version))
 }
 
 impl Store {
@@ -272,7 +164,7 @@ impl Store {
             }
         }
         let mut connection = connection(&path)?;
-        let (state, rows, data_version) = load(&mut connection, key.expose(), owner)?;
+        let (records, data_version) = load(&mut connection, key, owner)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -287,10 +179,7 @@ impl Store {
         configure(&connection)?;
         let mut store = Self {
             connection,
-            key,
-            owner: owner.into(),
-            state,
-            rows,
+            records,
             data_version,
             stats: CommitStats::default(),
             _lock: lock,
@@ -298,120 +187,52 @@ impl Store {
         if version(&store.connection)? != store.data_version {
             return Err(Error::Conflict);
         }
-        let mut normalized = store.state.clone();
+        let mut normalized = store.records.state().clone();
         layout::normalize(&mut normalized, owner)?;
         store.commit(normalized)?;
         Ok(store)
     }
     pub fn state(&self) -> &Value {
-        &self.state
+        self.records.state()
     }
     pub fn stats(&self) -> CommitStats {
         self.stats
     }
     /// Compute a candidate on a clone. Neither memory nor disk changes if it fails.
     pub fn transaction(&mut self, edit: impl FnOnce(&mut Value) -> Result<()>) -> Result<bool> {
-        let mut state = self.state.clone();
+        let mut state = self.records.state().clone();
         edit(&mut state)?;
         self.commit(state)
     }
     pub fn commit(&mut self, next: Value) -> Result<bool> {
-        layout::validate(&next, &self.owner)?;
-        let (header, groups) = layout::split(&next)?;
+        layout::validate(&next, self.records.owner())?;
         // Even no-op callers must not keep using externally modified state.
         if version(&self.connection)? != self.data_version {
             return Err(Error::Conflict);
         }
-        if self.state == next {
+        let Some(plan) = self.records.plan(next)? else {
             return Ok(false);
-        }
-        let mut planned = Rows::new();
-        for (bucket, values) in groups {
-            let dictionary = layout::DICTS.iter().any(|(name, _)| *name == bucket);
-            let mut last_existing = -1;
-            let mut saw_new = false;
-            let mut reorder = false;
-            for (id, _) in &values {
-                if let Some(old) = self.rows.get(&(bucket.clone(), id.clone())) {
-                    if saw_new || old.position <= last_existing {
-                        reorder = true;
-                    }
-                    last_existing = old.position;
-                } else {
-                    saw_new = true;
-                }
-            }
-            let mut last = -1i64;
-            for (ordinal, (id, value)) in values.into_iter().enumerate() {
-                let token = (bucket.clone(), id.clone());
-                let old = self.rows.get(&token);
-                let position = if dictionary {
-                    0
-                } else if reorder {
-                    i64::try_from(ordinal).map_err(|_| Error::Invalid("ordinal overflow"))?
-                } else if let Some(old) = old {
-                    old.position
-                } else {
-                    last.checked_add(1)
-                        .ok_or(Error::Invalid("position overflow"))?
-                };
-                last = position;
-                let row =
-                    if let Some(old) = old.filter(|r| r.position == position && r.value == value) {
-                        old.clone()
-                    } else {
-                        make_row(self.key.expose(), &bucket, &id, position, value)?
-                    };
-                planned.insert(token, row);
-            }
-        }
-        let token = ("header".into(), "root".into());
-        let root = if let Some(old) = self.rows.get(&token).filter(|r| r.value == header) {
-            old.clone()
-        } else {
-            make_row(self.key.expose(), "header", "root", 0, header)?
         };
-        planned.insert(token, root);
-        let total = planned.values().try_fold(0usize, |sum, r| {
-            sum.checked_add(r.cipher.len())
-                .ok_or(Error::Invalid("database size"))
-        })?;
-        if total > codec::MAX_BYTES {
-            return Err(Error::Invalid("database size"));
-        }
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if version(&tx)? != self.data_version {
             return Err(Error::Conflict);
         }
-        let mut written = 0;
-        let mut deleted = 0;
-        for (token, row) in &planned {
-            if self
-                .rows
-                .get(token)
-                .is_none_or(|old| old.cipher != row.cipher)
-            {
-                write_row(&tx, row)?;
-                written += 1;
-            }
+        for record in &plan.write {
+            write_row(&tx, record)?;
         }
-        for (token, row) in &self.rows {
-            if !planned.contains_key(token) {
-                tx.execute(
-                    "DELETE FROM records WHERE bucket=?1 AND id=?2",
-                    params![row.bucket, row.index],
-                )?;
-                deleted += 1;
-            }
+        for (bucket, id) in &plan.delete {
+            tx.execute(
+                "DELETE FROM records WHERE bucket=?1 AND id=?2",
+                params![bucket, id],
+            )?;
         }
         tx.commit()?;
-        self.state = next;
-        self.rows = planned;
         self.stats.transactions += 1;
-        self.stats.written_rows += written;
-        self.stats.deleted_rows += deleted;
+        self.stats.written_rows += plan.write.len() as u64;
+        self.stats.deleted_rows += plan.delete.len() as u64;
+        self.records.apply(plan);
         Ok(true)
     }
     pub fn checkpoint(&self) -> Result<()> {
@@ -429,8 +250,13 @@ impl Store {
         if version(&self.connection)? != self.data_version {
             return Err(Error::Conflict);
         }
-        let json = zeroize::Zeroizing::new(serde_json::to_vec(&self.state)?);
-        codec::seal(self.key.expose(), &codec::random_nonce()?, &json, &[])
+        let json = zeroize::Zeroizing::new(serde_json::to_vec(self.records.state())?);
+        codec::seal(
+            self.records.key().expose(),
+            &codec::random_nonce()?,
+            &json,
+            &[],
+        )
     }
 
     /// Import the optional legacy history once, in the same durable transaction.
@@ -440,7 +266,7 @@ impl Store {
         encrypted: &[u8],
         legacy_key: &Secret32,
     ) -> Result<bool> {
-        if !self.state["legacyHistory"].is_null() {
+        if !self.records.state()["legacyHistory"].is_null() {
             return Ok(false);
         }
         let plain = codec::open_legacy_archive(legacy_key.expose(), encrypted)?;
@@ -461,36 +287,16 @@ impl Drop for Store {
 }
 
 fn create_atomic(path: &Path, owner: &str, key: &[u8; 32], state: &Value) -> Result<()> {
-    layout::validate(state, owner)?;
     let parent = path.parent().ok_or(Error::Invalid("database parent"))?;
     let temp = tempfile::NamedTempFile::new_in(parent)?;
     {
         let mut db = connection(temp.path())?;
         configure(&db)?;
         db.execute_batch("CREATE TABLE records(bucket TEXT NOT NULL,id TEXT NOT NULL,position INTEGER NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(bucket,id)) WITHOUT ROWID; PRAGMA user_version=1;")?;
-        let (header, groups) = layout::split(state)?;
+        let (_, records) = Records::create(owner, Secret32::new(*key), state)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let root = make_row(key, "header", "root", 0, header)?;
-        let mut total = root.cipher.len();
-        write_row(&tx, &root)?;
-        for (bucket, rows) in groups {
-            let dictionary = layout::DICTS.iter().any(|(name, _)| *name == bucket);
-            for (position, (id, value)) in rows.into_iter().enumerate() {
-                let row = make_row(
-                    key,
-                    &bucket,
-                    &id,
-                    if dictionary { 0 } else { position as i64 },
-                    value,
-                )?;
-                total = total
-                    .checked_add(row.cipher.len())
-                    .ok_or(Error::Invalid("database size"))?;
-                if total > codec::MAX_BYTES {
-                    return Err(Error::Invalid("database size"));
-                }
-                write_row(&tx, &row)?;
-            }
+        for record in &records {
+            write_row(&tx, record)?;
         }
         tx.commit()?;
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;

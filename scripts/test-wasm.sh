@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds Shum-Core's pure crate for WebAssembly and runs its tests in Node.js.
+# Builds the parts of Shum-Core the browser uses for WebAssembly and runs
+# their tests in Node.js.
 # Needs the wasm32-wasip1 Rust target, Homebrew llvm (clang) and lld (wasm-ld).
 set -eu
 cd "$(dirname "$0")/.."
@@ -13,3 +14,5 @@ export AR_wasm32_wasip1=/opt/homebrew/opt/llvm/bin/llvm-ar
 # secp256k1's minimal WebAssembly headers do not declare memmove.
 export CFLAGS_wasm32_wasip1="-Dmemmove=__builtin_memmove"
 cargo test -p shum-core --target wasm32-wasip1 "$@"
+# Storage without SQLite, as the browser uses it.
+cargo test -p shum-store --no-default-features --target wasm32-wasip1 "$@"

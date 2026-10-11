@@ -1,16 +1,23 @@
 //! Authenticated record storage, compatible with iOS spec/09.
-//! State is published only after a durable SQLite transaction succeeds.
+//! State is published only after a durable transaction succeeds: SQLite in
+//! native clients (feature `native`), IndexedDB in the browser.
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "native")]
 pub mod backup;
 pub mod codec;
 pub mod engine;
 mod layout;
+#[cfg(feature = "native")]
 pub mod profiles;
+pub mod records;
+#[cfg(feature = "native")]
 mod sqlite;
+#[cfg(feature = "native")]
 pub mod vault;
 pub use layout::empty_state;
+#[cfg(feature = "native")]
 pub use sqlite::{CommitStats, Store};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -42,6 +49,7 @@ pub enum Error {
     ProfileName,
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "native")]
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
