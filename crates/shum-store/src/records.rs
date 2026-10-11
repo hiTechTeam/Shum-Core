@@ -237,6 +237,11 @@ impl Records {
         &self.state
     }
 
+    /// Every stored record, for a backend that writes a new profile.
+    pub fn all(&self) -> Vec<Record> {
+        self.rows.values().map(|r| r.record.clone()).collect()
+    }
+
     pub fn owner(&self) -> &str {
         &self.owner
     }

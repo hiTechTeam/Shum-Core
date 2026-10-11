@@ -21,6 +21,7 @@
 | `shum-transport-ble` | Поиск, GATT, Noise и Bluetooth-сетка |
 | `shum-store` | Зашифрованная SQLite и ключи профилей |
 | `shum-session` | Работающий профиль для любого клиента: движок, хранилище, релеи, Bluetooth, push и команды |
+| `shum-web` | Shum-Core для браузера (WebAssembly): профили хранятся зашифрованными записями в IndexedDB; сборка — `scripts/build-web.sh` |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) подключает ядро напрямую. Мобильные, десктопные и браузерные клиенты находятся на разных этапах разработки.
 

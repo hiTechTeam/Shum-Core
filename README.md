@@ -21,6 +21,7 @@ Local profiles have independent IDs, keys and databases. Display names may repea
 | `shum-transport-ble` | Discovery, GATT, Noise and Bluetooth mesh |
 | `shum-store` | Encrypted SQLite storage and profile keys |
 | `shum-session` | A running profile for any client: engine, storage, relays, Bluetooth, push and commands |
+| `shum-web` | Shum-Core for the browser (WebAssembly): profiles kept as encrypted records in IndexedDB; built by `scripts/build-web.sh` |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) uses the core directly. Mobile, desktop and browser integration are at different stages of development.
 

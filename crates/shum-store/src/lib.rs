@@ -8,6 +8,7 @@
 pub mod backup;
 pub mod codec;
 pub mod engine;
+pub mod keys;
 mod layout;
 #[cfg(feature = "native")]
 pub mod profiles;

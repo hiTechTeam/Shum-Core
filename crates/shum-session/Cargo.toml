@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 shum-core.workspace = true
-shum-store.workspace = true
+shum-store = { workspace = true, features = ["native"] }
 shum-transport-nostr.workspace = true
 shum-transport-ble.workspace = true
 anyhow = "1"

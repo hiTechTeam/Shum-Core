@@ -1,7 +1,6 @@
 //! OS credentials and explicit Unix server fallback. No secret implements Debug.
 use crate::{sqlite::private_options, Error, Result};
 use serde::{Deserialize, Serialize};
-use shum_core::crypto::Secret32;
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -9,7 +8,9 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-const MAGIC: &[u8; 8] = b"SHUMKEY1";
+pub(crate) use crate::keys::random_secret;
+pub use crate::keys::ProfileKeys;
+
 const SERVICE: &str = "org.shum.cli.profile.v1";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,66 +64,6 @@ fn system_supported() -> Result<()> {
     }
 }
 
-pub struct ProfileKeys {
-    pub noise: Secret32,
-    pub signing: Secret32,
-    pub nostr: Secret32,
-    pub storage: Secret32,
-}
-pub(crate) fn random_secret() -> Result<Secret32> {
-    let mut bytes = Zeroizing::new([0; 32]);
-    getrandom::fill(bytes.as_mut()).map_err(|_| Error::Random)?;
-    Ok(Secret32::new(*bytes))
-}
-impl ProfileKeys {
-    pub fn generate() -> Result<Self> {
-        let noise = random_secret()?;
-        let signing = random_secret()?;
-        let nostr = loop {
-            let secret = random_secret()?;
-            if secret.nostr_public().is_ok() {
-                break secret;
-            }
-        };
-        Ok(Self {
-            noise,
-            signing,
-            nostr,
-            storage: random_secret()?,
-        })
-    }
-    pub fn owner_id(&self) -> String {
-        shum_core::crypto::id(&self.noise.noise_public())
-    }
-    fn encode(&self) -> Zeroizing<Vec<u8>> {
-        let mut bytes = Zeroizing::new(Vec::with_capacity(136));
-        bytes.extend_from_slice(MAGIC);
-        for key in [&self.noise, &self.signing, &self.nostr, &self.storage] {
-            bytes.extend_from_slice(key.expose());
-        }
-        bytes
-    }
-    fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != 136 || &bytes[..8] != MAGIC {
-            return Err(Error::Invalid("secret bundle version or size"));
-        }
-        let secret =
-            |offset| Secret32::new(bytes[offset..offset + 32].try_into().expect("checked size"));
-        let keys = Self {
-            noise: secret(8),
-            signing: secret(40),
-            nostr: secret(72),
-            storage: secret(104),
-        };
-        if keys.nostr.nostr_public().is_err() {
-            return Err(Error::Invalid("Nostr secret"));
-        }
-        Ok(keys)
-    }
-    pub fn storage_key(&self) -> Secret32 {
-        Secret32::new(*self.storage.expose())
-    }
-}
 fn check_secret(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {

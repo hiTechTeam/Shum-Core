@@ -5,6 +5,7 @@ members = [
     "crates/shum-transport-ble",
     "crates/shum-store",
     "crates/shum-session",
+    "crates/shum-web",
 ]
 resolver = "2"
 
@@ -18,5 +19,5 @@ repository = "https://github.com/hiTechTeam/Shum-Core"
 shum-core = { path = "crates/shum-core" }
 shum-transport-nostr = { path = "crates/shum-transport-nostr" }
 shum-transport-ble = { path = "crates/shum-transport-ble" }
-shum-store = { path = "crates/shum-store" }
+shum-store = { path = "crates/shum-store", default-features = false }
 shum-session = { path = "crates/shum-session" }
