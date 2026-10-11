@@ -253,3 +253,36 @@ async fn answer(
     };
     write_frame(&mut stream, &serde_json::to_vec(&response)?).await
 }
+
+/// The own card and chat count of profile `id` without taking it over: asked
+/// from its running owner, or read from its database when nobody owns it.
+/// A locked profile, or one that cannot be read right now, gives `None`.
+pub async fn preview(root: &Path, id: &str) -> Option<Value> {
+    if is_locked(root, id) {
+        return None;
+    }
+    if endpoint(root, id).exists() {
+        let snapshot = timeout(
+            Duration::from_millis(250),
+            request(root, id, Request::Snapshot),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        let chats = snapshot["contacts"].as_array().map_or(0, Vec::len);
+        return Some(json!({ "card": snapshot["card"], "chatCount": chats }));
+    }
+    let root = root.to_owned();
+    let id = id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let profiles = Profiles::new(root).ok()?;
+        let open = profiles.open(Some(&id)).ok()?;
+        let state = open.store.state();
+        Some(json!({
+            "card": state["ownProfileCard"],
+            "chatCount": state["contacts"].as_array().map_or(0, Vec::len),
+        }))
+    })
+    .await
+    .ok()?
+}

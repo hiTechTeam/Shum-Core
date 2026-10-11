@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contact;
+pub mod registration;
 pub mod service;
 pub mod timeline;
 
