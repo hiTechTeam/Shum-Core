@@ -11,7 +11,7 @@ use serde_json::{json, Map, Value};
 use shum_core::crypto::Secret32;
 use shum_session::{
     driver::{Driver, Output},
-    machine::Host,
+    machine::{Host, Nearby},
     Failure, Request,
 };
 use shum_store::{keys::ProfileKeys, Store};
@@ -176,6 +176,12 @@ impl MobileSession {
         self.lock().snapshot().to_string()
     }
 
+    /// The stored profile state (protocol section 09) as JSON, the same
+    /// layout the iOS app decodes into its own model.
+    pub fn state(&self) -> String {
+        self.lock().machine.host.store.state().to_string()
+    }
+
     /// Handles a request given as JSON. Returns `{"ok": …}` or
     /// `{"error": …}` at once, or nothing when the answer comes later as a
     /// `reply` effect with this `id`.
@@ -211,6 +217,74 @@ impl MobileSession {
         self.lock().url(relay as usize).map(Into::into)
     }
 
+    /// Someone nearby over Bluetooth: their routing ID, signed card (JSON),
+    /// Noise session key, estimated distance in metres and whether the link
+    /// is direct. The session records the encounter and can deliver to them.
+    pub fn nearby_peer(
+        &self,
+        routing: String,
+        card: String,
+        noise: Vec<u8>,
+        distance: Option<u32>,
+        direct: bool,
+    ) -> Result<(), MobileError> {
+        let card: shum_core::card::Card = serde_json::from_str(&card).map_err(failed)?;
+        card.validate().map_err(failed)?;
+        let noise: [u8; 32] = noise
+            .try_into()
+            .map_err(|_| failed("Ключ Noise должен быть 32 байта"))?;
+        self.lock()
+            .machine
+            .nearby(Nearby::Peer {
+                routing,
+                card: Box::new(card),
+                noise,
+                distance,
+                direct,
+            })
+            .map_err(failed)
+    }
+
+    /// Someone nearby went out of reach.
+    pub fn nearby_gone(&self, routing: String) {
+        let _ = self.lock().machine.nearby(Nearby::Gone(routing));
+    }
+
+    /// A Shum packet (its JSON bytes) arrived over Bluetooth from `routing`,
+    /// whose Noise session key is `noise`.
+    pub fn nearby_packet(
+        &self,
+        routing: String,
+        noise: Vec<u8>,
+        packet: Vec<u8>,
+    ) -> Result<(), MobileError> {
+        if packet.len() > 24_000 {
+            return Err(failed("Пакет слишком большой"));
+        }
+        let packet = shum_core::packet::Packet::decode(&packet).map_err(failed)?;
+        let noise: [u8; 32] = noise
+            .try_into()
+            .map_err(|_| failed("Ключ Noise должен быть 32 байта"))?;
+        self.lock()
+            .machine
+            .nearby(Nearby::Packet {
+                routing,
+                noise,
+                packet: Box::new(packet),
+            })
+            .map_err(failed)
+    }
+
+    /// Bluetooth state for snapshots: `role` is "scan" or "advertise".
+    pub fn bluetooth(&self, role: String, state: String) {
+        let role = if role == "advertise" {
+            "advertise"
+        } else {
+            "scan"
+        };
+        let _ = self.lock().machine.nearby(Nearby::State { role, state });
+    }
+
     /// The push service answered for `event`; `error` says why it failed.
     pub fn pushed(&self, event: String, error: Option<String>) {
         self.lock().pushed(&event, error);
@@ -221,7 +295,7 @@ impl MobileSession {
     /// `close` (relay); news `connected`, `disconnected`, `eose` (url);
     /// `renamed` (name); `reply` (id, ok or error); `push` (event, path,
     /// headers, body in base64) to POST to the push service; `ble` (peer,
-    /// packet) for a nearby device.
+    /// packet bytes in base64) for a nearby device.
     pub fn effects(&self, now: u64) -> String {
         let mut driver = self.lock();
         let outputs = driver.outputs();
@@ -249,11 +323,17 @@ impl MobileSession {
                     Ok(push) => all.push(push),
                     Err(error) => driver.pushed(&event, Some(error.to_string())),
                 },
-                Output::SendBle { peer, packet } => all.push(json!({
-                    "type": "ble",
-                    "peer": peer,
-                    "packet": packet,
-                })),
+                // The packet goes over Bluetooth as its JSON bytes.
+                Output::SendBle { peer, packet } => {
+                    match shum_core::canonical::encode(packet.as_ref()) {
+                        Ok(bytes) => all.push(json!({
+                            "type": "ble",
+                            "peer": peer,
+                            "packet": STANDARD.encode(bytes),
+                        })),
+                        Err(error) => driver.machine.bluetooth["error"] = json!(error.to_string()),
+                    }
+                }
             }
         }
         Value::from(all).to_string()
