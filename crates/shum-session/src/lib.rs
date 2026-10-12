@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod contact;
+pub mod directory;
 pub mod driver;
 pub mod machine;
 #[cfg(feature = "native")]
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use shum_core::packet::ReactionKind;
 
 /// Version of the [`Request`] API. Clients compare it with a running session.
-pub const COMMAND_SCHEMA_VERSION: u64 = 3;
+pub const COMMAND_SCHEMA_VERSION: u64 = 4;
 
 /// Why a request failed, in a form each client can present in its own words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -122,6 +123,9 @@ pub enum Request {
     Send {
         contact: String,
         text: String,
+        /// The message this one answers, as the iOS app quotes it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<shum_core::packet::Reply>,
     },
     Read {
         contact: String,
@@ -155,6 +159,24 @@ pub enum Request {
     Block {
         contact: String,
         blocked: bool,
+    },
+    /// Marks an encounter nearby as seen, or all of them without a contact.
+    ViewEncounters {
+        contact: Option<String>,
+    },
+    /// Deletes an encounter nearby, or all of them without a contact.
+    DeleteEncounters {
+        contact: Option<String>,
+    },
+    /// Pins a person at the top of a list ("contacts", "encounters", "chats"),
+    /// or unpins them.
+    Pin {
+        contact: String,
+        directory: String,
+    },
+    /// Keeps a contact out of the address book; the chat stays.
+    RemoveContact {
+        contact: String,
     },
     Stop,
 }

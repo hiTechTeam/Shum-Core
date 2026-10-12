@@ -393,7 +393,7 @@ impl<H: Host> Machine<H> {
             )
             .collect();
         cards.retain(|id, _| !self.engine.inbox.blocked.contains(id));
-        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
+        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"addressBook":crate::directory::in_address_book(self.host.state(),&id),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
         contacts.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
@@ -420,7 +420,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now()),"pins":crate::directory::pins(self.host.state()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
@@ -481,13 +481,17 @@ impl<H: Host> Machine<H> {
             Request::Invite { .. } | Request::Accept { .. } | Request::Decline { .. } => {
                 bail!("internal invitation dispatch")
             }
-            Request::Send { contact, text } => {
+            Request::Send {
+                contact,
+                text,
+                reply,
+            } => {
                 let id = self.contact(&contact)?;
                 if self.engine.inbox.phase(&id) != shum_core::rules::Phase::Accepted {
                     return Err(phase(self.engine.inbox.phase(&id)));
                 }
                 let ephemeral = secret()?;
-                self.apply(|e, c| e.send(&id, &text, None, &ephemeral, c))?;
+                self.apply(|e, c| e.send(&id, &text, reply, &ephemeral, c))?;
             }
             Request::Read { contact } => {
                 let id = self.contact(&contact)?;
@@ -552,9 +556,70 @@ impl<H: Host> Machine<H> {
                 })?;
                 self.host.renamed()?;
             }
+            Request::ViewEncounters { contact } => {
+                let id = contact.map(|c| self.person(&c)).transpose()?;
+                self.edit(|state| {
+                    crate::directory::view_encounters(state, id.as_deref());
+                    true
+                })?;
+            }
+            Request::DeleteEncounters { contact } => {
+                let id = contact.map(|c| self.person(&c)).transpose()?;
+                self.edit(|state| {
+                    crate::directory::delete_encounters(state, id.as_deref());
+                    true
+                })?;
+            }
+            Request::Pin { contact, directory } => {
+                let id = self.person(&contact)?;
+                if directory.is_empty() || directory.len() > 32 || id == self.engine.inbox.own.id()
+                {
+                    return Err(text("Нельзя закрепить"));
+                }
+                let mut pinned = false;
+                self.edit(|state| {
+                    pinned = crate::directory::toggle_pin(state, &directory, &id);
+                    true
+                })?;
+                return Ok(json!({ "pinned": pinned }));
+            }
+            Request::RemoveContact { contact } => {
+                let id = self.contact(&contact)?;
+                self.edit(|state| crate::directory::remove_from_contacts(state, &id))?;
+            }
             Request::Stop => self.stopped = true,
         }
         Ok(json!({"status":"ok"}))
+    }
+
+    /// A person by contact selector, or by the exact Shum ID of someone met
+    /// nearby who is not a contact.
+    fn person(&self, selector: &str) -> Result<String> {
+        if let Some(id) = self.resolve_contact(selector)? {
+            return Ok(id);
+        }
+        let met = self.host.state()["encounters"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter().any(|r| {
+                    serde_json::from_value::<Card>(r["card"].clone())
+                        .is_ok_and(|c| c.id() == selector)
+                })
+            });
+        if met {
+            Ok(selector.into())
+        } else {
+            Err(text("Контакт не найден"))
+        }
+    }
+
+    /// Changes profile state that the engine does not model, in one commit.
+    fn edit(&mut self, change: impl FnOnce(&mut Value) -> bool) -> Result<()> {
+        let mut state = self.host.state().clone();
+        if change(&mut state) {
+            self.host.commit(state)?;
+        }
+        Ok(())
     }
 
     fn start_lookup(
@@ -803,6 +868,10 @@ impl<H: Host> Machine<H> {
                 direct,
             } => {
                 if !self.engine.inbox.blocked.contains(&card.id()) {
+                    if card.id() != self.engine.inbox.own.id() {
+                        let met = card.as_ref().clone();
+                        self.edit(|state| crate::directory::record_encounter(state, &met, now()))?;
+                    }
                     let peer = Peer::authenticated(routing.clone(), *card, &noise)?;
                     self.nearby.insert(
                         routing,

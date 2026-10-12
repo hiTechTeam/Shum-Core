@@ -178,3 +178,41 @@ fn stop_and_errors_come_back_as_requests_answers() {
     ok(&mut anya, json!({"command":"stop"}));
     assert!(anya.stopped());
 }
+
+#[test]
+fn people_nearby_become_encounters_that_can_be_pinned() {
+    use shum_session::machine::Nearby;
+    let mut anya = profile("Аня");
+    let boris = profile("Борис");
+    let card = boris.engine.inbox.own.clone();
+    let noise = boris.host.keys.noise.noise_public();
+    anya.nearby(Nearby::Peer {
+        routing: "0011223344556677".into(),
+        card: Box::new(card.clone()),
+        noise,
+        distance: Some(3),
+        direct: true,
+    })
+    .unwrap();
+    let snapshot = anya.snapshot();
+    assert_eq!(snapshot["encounters"][0]["id"], card.id());
+    assert_eq!(snapshot["encounters"][0]["viewed"], false);
+
+    let pinned = ok(
+        &mut anya,
+        json!({"command":"pin","contact":card.id(),"directory":"encounters"}),
+    );
+    assert_eq!(pinned["pinned"], true);
+    ok(
+        &mut anya,
+        json!({"command":"view_encounters","contact":null}),
+    );
+    let snapshot = anya.snapshot();
+    assert_eq!(snapshot["pins"]["encounters"][0], card.id());
+    assert_eq!(snapshot["encounters"][0]["viewed"], true);
+    ok(
+        &mut anya,
+        json!({"command":"delete_encounters","contact":card.id()}),
+    );
+    assert_eq!(anya.snapshot()["encounters"], json!([]));
+}
