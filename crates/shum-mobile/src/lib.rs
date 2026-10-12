@@ -71,6 +71,8 @@ struct StoreHost {
     keys: ProfileKeys,
     store: Store,
     renamed: bool,
+    /// Counts commits, so Swift knows when the stored state changed.
+    commits: u64,
 }
 
 impl Host for StoreHost {
@@ -81,7 +83,9 @@ impl Host for StoreHost {
         self.store.state()
     }
     fn commit(&mut self, next: Value) -> anyhow::Result<()> {
-        self.store.commit(next)?;
+        if self.store.commit(next)? {
+            self.commits += 1;
+        }
         Ok(())
     }
     fn profile(&self) -> Value {
@@ -159,6 +163,7 @@ impl MobileSession {
             keys,
             store,
             renamed: false,
+            commits: 0,
         };
         let client: Map<String, Value> = serde_json::from_str(&client).unwrap_or_default();
         let mut driver = Driver::new(host, push, client, &relays, true, now).map_err(failed)?;
@@ -174,6 +179,12 @@ impl MobileSession {
 
     pub fn snapshot(&self) -> String {
         self.lock().snapshot().to_string()
+    }
+
+    /// Grows with every change to the stored state; Swift reads `state()`
+    /// again only when it did.
+    pub fn revision(&self) -> u64 {
+        self.lock().machine.host.commits
     }
 
     /// The stored profile state (protocol section 09) as JSON, the same
