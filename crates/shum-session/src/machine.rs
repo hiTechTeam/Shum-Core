@@ -152,6 +152,8 @@ pub struct Machine<H: Host> {
     pub bluetooth: Value,
     relays: Vec<String>,
     push: bool,
+    /// How long encounters nearby stay listed; each client chooses.
+    encounter_retention: i64,
     inflight: HashSet<String>,
     pushed: HashSet<String>,
     lookups: HashMap<String, Lookup>,
@@ -183,6 +185,7 @@ impl<H: Host> Machine<H> {
             bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             relays: Vec::new(),
             push,
+            encounter_retention: crate::directory::DEFAULT_RETENTION_MS,
             inflight: HashSet::new(),
             pushed: HashSet::new(),
             lookups: HashMap::new(),
@@ -213,6 +216,14 @@ impl<H: Host> Machine<H> {
     /// Relays with a working subscription, for routes and snapshots.
     pub fn set_relays(&mut self, connected: Vec<String>) {
         self.relays = connected;
+    }
+
+    /// How long encounters nearby stay listed, in milliseconds; each client
+    /// chooses, 24 hours unless it says otherwise.
+    pub fn set_encounter_retention(&mut self, milliseconds: i64) {
+        if milliseconds > 0 {
+            self.encounter_retention = milliseconds;
+        }
     }
 
     /// Bluetooth is off or used by another profile: nobody is nearby.
@@ -420,7 +431,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now()),"pins":crate::directory::pins(self.host.state()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
@@ -870,7 +881,10 @@ impl<H: Host> Machine<H> {
                 if !self.engine.inbox.blocked.contains(&card.id()) {
                     if card.id() != self.engine.inbox.own.id() {
                         let met = card.as_ref().clone();
-                        self.edit(|state| crate::directory::record_encounter(state, &met, now()))?;
+                        let retention = self.encounter_retention;
+                        self.edit(|state| {
+                            crate::directory::record_encounter(state, &met, now(), retention)
+                        })?;
                     }
                     let peer = Peer::authenticated(routing.clone(), *card, &noise)?;
                     self.nearby.insert(

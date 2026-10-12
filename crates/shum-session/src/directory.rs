@@ -6,8 +6,8 @@
 use serde_json::{json, Map, Value};
 use shum_core::card::Card;
 
-/// Encounters older than a day leave the list.
-pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
+/// How long encounters stay in the list unless the client sets its own.
+pub const DEFAULT_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 /// Seeing someone again within a minute is the same encounter.
 const SAME_ENCOUNTER_MS: i64 = 60 * 1000;
 const MAX_ENCOUNTERS: usize = 1000;
@@ -42,9 +42,10 @@ fn set_ids(state: &mut Value, key: &str, ids: Vec<String>) {
 }
 
 /// Records that `card` was seen nearby at `now` (milliseconds since 1970).
+/// Someone not seen for `retention` milliseconds counts as new again.
 /// Returns whether the state changed. A card with other keys under the same
 /// Shum ID is refused.
-pub fn record_encounter(state: &mut Value, card: &Card, now: i64) -> bool {
+pub fn record_encounter(state: &mut Value, card: &Card, now: i64, retention: i64) -> bool {
     let id = card.id();
     if !state["encounters"].is_array() {
         state["encounters"] = json!([]);
@@ -72,7 +73,7 @@ pub fn record_encounter(state: &mut Value, card: &Card, now: i64) -> bool {
         if now - previous >= SAME_ENCOUNTER_MS {
             row["seenCount"] = json!(row["seenCount"].as_i64().unwrap_or(1) + 1);
         }
-        unviewed = now - previous >= RETENTION_MS;
+        unviewed = now - previous >= retention;
     } else {
         encounters.push(json!({
             "card": card_json,
@@ -189,13 +190,14 @@ pub fn in_address_book(state: &Value, id: &str) -> bool {
         .is_none_or(|row| row["metadata"]["addressBook"].as_str() != Some("false"))
 }
 
-/// The encounters of the last day that are not blocked, newest first, for
-/// snapshots: `{id, card, firstSeen, lastSeen, seenCount, viewed}` with
-/// times in milliseconds since 1970.
+/// The encounters seen within `retention` milliseconds that are not
+/// blocked, newest first, for snapshots: `{id, card, firstSeen, lastSeen,
+/// seenCount, viewed}` with times in milliseconds since 1970.
 pub fn encounters(
     state: &Value,
     blocked: &std::collections::HashSet<String>,
     now: i64,
+    retention: i64,
 ) -> Vec<Value> {
     let unviewed: Vec<&str> = state["unviewedEncounterIDs"]
         .as_array()
@@ -208,7 +210,7 @@ pub fn encounters(
                 .filter_map(|row| {
                     let id = id_of(row)?;
                     let last = ms(&row["lastSeen"]);
-                    (!blocked.contains(&id) && now - last <= RETENTION_MS).then(|| {
+                    (!blocked.contains(&id) && now - last <= retention).then(|| {
                         json!({
                             "id": id,
                             "card": row["card"],

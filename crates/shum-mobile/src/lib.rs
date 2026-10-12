@@ -51,6 +51,9 @@ pub struct MobileProfile {
     pub push: bool,
     /// JSON object merged into every snapshot, for example the app version.
     pub client: String,
+    /// How long encounters nearby stay listed, in hours; 0 keeps the
+    /// default of 24.
+    pub encounter_retention_hours: u32,
 }
 
 fn secret(bytes: &[u8]) -> Result<Secret32, MobileError> {
@@ -136,6 +139,7 @@ impl MobileSession {
             relays,
             push,
             client,
+            encounter_retention_hours,
         } = profile;
         let keys = ProfileKeys {
             noise: secret(&keys.noise)?,
@@ -157,7 +161,12 @@ impl MobileSession {
             renamed: false,
         };
         let client: Map<String, Value> = serde_json::from_str(&client).unwrap_or_default();
-        let driver = Driver::new(host, push, client, &relays, true, now).map_err(failed)?;
+        let mut driver = Driver::new(host, push, client, &relays, true, now).map_err(failed)?;
+        if encounter_retention_hours > 0 {
+            driver
+                .machine
+                .set_encounter_retention(i64::from(encounter_retention_hours) * 60 * 60 * 1000);
+        }
         Ok(Arc::new(Self {
             driver: Mutex::new(driver),
         }))
