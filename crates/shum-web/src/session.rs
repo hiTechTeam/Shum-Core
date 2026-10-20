@@ -136,6 +136,11 @@ impl WebSession {
         self.driver.tick(now as u64);
     }
 
+    /// The tab is visible again: relays reconnect at once.
+    pub fn wake(&mut self, now: f64) {
+        self.driver.wake(now as u64);
+    }
+
     /// This profile's invitation link and QR code: `{"link": …, "qr": …}`.
     pub fn invitation(&self) -> Result<String, JsError> {
         invitation_json(&self.driver.machine.engine.inbox.own)

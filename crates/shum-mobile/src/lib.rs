@@ -224,6 +224,12 @@ impl MobileSession {
         self.lock().tick(now);
     }
 
+    /// The app is back in the foreground, or a push woke it: relays
+    /// reconnect at once.
+    pub fn wake(&self, now: u64) {
+        self.lock().wake(now);
+    }
+
     pub fn url(&self, relay: u32) -> Option<String> {
         self.lock().url(relay as usize).map(Into::into)
     }
@@ -424,4 +430,70 @@ pub fn avatar_pixels(seed: u64) -> Vec<u8> {
         .into_iter()
         .flatten()
         .collect()
+}
+
+/// What a backup file says about itself before the password is entered.
+#[derive(uniffi::Record)]
+pub struct MobileBackupSummary {
+    pub profile_name: String,
+    /// RFC 3339 UTC.
+    pub created_at: String,
+}
+
+/// A backup opened with its password (protocol section 13): the profile, its
+/// keys and its stored state. The storage key is new; the database written
+/// from this backup uses it.
+#[derive(uniffi::Record)]
+pub struct MobileBackup {
+    pub name: String,
+    pub owner_id: String,
+    pub keys: MobileKeys,
+    /// The stored profile state (protocol section 09) as JSON.
+    pub state: String,
+}
+
+/// Reads the profile name and date of a backup file.
+#[uniffi::export]
+pub fn backup_summary(file: Vec<u8>) -> Result<MobileBackupSummary, MobileError> {
+    let summary = shum_store::backup::summary(&file).map_err(failed)?;
+    Ok(MobileBackupSummary {
+        profile_name: summary.profile_name,
+        created_at: summary.created_at,
+    })
+}
+
+/// Opens and checks a backup file.
+#[uniffi::export]
+pub fn open_backup(file: Vec<u8>, password: String) -> Result<MobileBackup, MobileError> {
+    let opened = shum_store::backup::open(&file, &password).map_err(failed)?;
+    Ok(MobileBackup {
+        name: opened.name,
+        owner_id: opened.owner_id,
+        keys: MobileKeys {
+            noise: opened.keys.noise.expose().to_vec(),
+            signing: opened.keys.signing.expose().to_vec(),
+            nostr: opened.keys.nostr.expose().to_vec(),
+            storage: opened.keys.storage.expose().to_vec(),
+        },
+        state: opened.state.to_string(),
+    })
+}
+
+/// Writes a restored profile state into a new database file, sealed with
+/// the restored storage key. An existing database is refused.
+#[uniffi::export]
+pub fn write_database(
+    database: String,
+    owner_id: String,
+    storage: Vec<u8>,
+    state: String,
+) -> Result<(), MobileError> {
+    if std::path::Path::new(&database).exists() {
+        return Err(failed("the profile database already exists"));
+    }
+    let state: Value = serde_json::from_str(&state).map_err(failed)?;
+    let mut store = Store::open(&database, &owner_id, secret(&storage)?).map_err(failed)?;
+    store.commit(state).map_err(failed)?;
+    store.checkpoint().map_err(failed)?;
+    Ok(())
 }

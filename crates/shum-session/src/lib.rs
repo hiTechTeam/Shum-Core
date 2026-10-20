@@ -151,6 +151,10 @@ pub enum Request {
     Cancel {
         message: String,
     },
+    /// Sends an expired message again at the end of the chat.
+    Resend {
+        message: String,
+    },
     Profile {
         name: Option<String>,
         bio: Option<String>,

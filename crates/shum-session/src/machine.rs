@@ -538,6 +538,10 @@ impl<H: Host> Machine<H> {
                 self.apply(|e, c| e.toggle_reaction(&message, reaction, c))?
             }
             Request::Cancel { message } => self.apply(|e, c| e.cancel_sending(&message, c))?,
+            Request::Resend { message } => {
+                let ephemeral = secret()?;
+                self.apply(|e, c| e.resend(&message, &ephemeral, c))?;
+            }
             Request::Clear { contact } => {
                 let id = self.contact(&contact)?;
                 self.apply_with_clear(

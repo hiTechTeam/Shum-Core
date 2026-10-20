@@ -311,3 +311,57 @@ fn rate_limits_are_per_class_and_reset_at_exact_boundary() {
     assert!(limiter.allow("sender", Traffic::Receipt, 59999));
     assert!(limiter.allow("sender", Traffic::Content, 60000));
 }
+#[test]
+fn an_expired_message_is_sent_again_at_the_end_of_the_chat() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let offline = Routes::default();
+    let now = 1800000000000;
+    let mut ea = accepted(&a, &b);
+    let reply = Reply {
+        message_id: id(9),
+        sender_id: b.card.id(),
+        text: "вопрос".into(),
+    };
+    ea.send(
+        &b.card.id(),
+        "Не дошло",
+        Some(reply.clone()),
+        &Secret32::new([81; 32]),
+        &a.context(&offline, now, &id(1)),
+    )
+    .unwrap();
+    // Waiting messages cannot be resent: they are still on their way.
+    assert!(ea
+        .resend(
+            &id(1),
+            &Secret32::new([82; 32]),
+            &a.context(&offline, now + 1, &id(2))
+        )
+        .is_err());
+    let later = now + 24 * 60 * 60 * 1000 + 1;
+    ea.tick(&offline, later);
+    assert_eq!(ea.outbox.messages[0].delivery.status, Delivery::Expired);
+    ea.resend(
+        &id(1),
+        &Secret32::new([83; 32]),
+        &a.context(&offline, later, &id(3)),
+    )
+    .unwrap();
+    assert_eq!(ea.outbox.messages.len(), 1, "the expired copy is gone");
+    let again = &ea.outbox.messages[0];
+    assert_eq!(again.envelope.id, id(3));
+    assert_eq!(again.delivery.status, Delivery::Queued);
+    let text = again.plaintext.as_ref().unwrap();
+    assert_eq!(text.text, "Не дошло");
+    assert_eq!(text.reply, Some(reply));
+    assert_eq!(text.timestamp, later);
+    // The old ID is gone, so a second tap does nothing twice.
+    assert!(ea
+        .resend(
+            &id(1),
+            &Secret32::new([84; 32]),
+            &a.context(&offline, later, &id(4))
+        )
+        .is_err());
+}

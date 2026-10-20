@@ -331,3 +331,38 @@ fn quiet_relays_are_pinged_and_silent_ones_dropped() {
     r.tick(T0 + 120_000);
     assert!(r.effects().is_empty());
 }
+
+#[test]
+fn waking_connects_waiting_relays_and_checks_open_ones() {
+    let mut r = relays(&[A, B], true);
+    r.tick(T0);
+    r.effects();
+    open(&mut r, 0, 1, T0);
+    // B failed a few times and waits 8 seconds before the next attempt.
+    let mut now = T0;
+    for attempt in 1..=4 {
+        r.closed(1, attempt, now);
+        r.effects();
+        now += 1000 << (attempt - 1);
+        r.tick(now);
+        r.effects();
+    }
+    r.closed(1, 5, now);
+    r.effects();
+    r.received(0, 1, &json!(["EOSE", SUBSCRIPTION]).to_string(), now);
+    r.effects();
+    r.wake(now + 1);
+    assert_eq!(
+        r.effects(),
+        vec![
+            Effect::Ping { relay: 0 },
+            Effect::Connect {
+                relay: 1,
+                attempt: 6
+            }
+        ]
+    );
+    // Waking twice in a row does not open a second connection.
+    r.wake(now + 2);
+    assert_eq!(r.effects(), vec![Effect::Ping { relay: 0 }]);
+}

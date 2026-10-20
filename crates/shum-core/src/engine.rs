@@ -909,4 +909,32 @@ impl Engine {
         self.held_reactions.remove(message_id);
         Ok(self.tick(c.routes, c.now))
     }
+    /// Sends an expired message again at the end of the chat and removes the
+    /// expired one, so repeated retries never leave duplicates.
+    pub fn resend(
+        &mut self,
+        message_id: &str,
+        ephemeral: &Secret32,
+        c: &Context<'_>,
+    ) -> Result<Vec<Action>> {
+        self.live()?;
+        let message = self
+            .outbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == message_id)
+            .ok_or(Error::Invalid("unknown outgoing message"))?;
+        if message.delivery.status != Delivery::Expired {
+            return Err(Error::Invalid("message has not expired"));
+        }
+        let plaintext = message
+            .plaintext
+            .clone()
+            .ok_or(Error::Invalid("message text is not stored"))?;
+        let id = message.envelope.recipient.id();
+        let actions = self.send(&id, &plaintext.text, plaintext.reply, ephemeral, c)?;
+        self.outbox.messages.retain(|m| m.envelope.id != message_id);
+        self.inbox.reactions.retain(|(id, _), _| id != message_id);
+        Ok(actions)
+    }
 }

@@ -109,6 +109,14 @@ impl<H: Host> Driver<H> {
         self.machine.tick();
     }
 
+    /// The client is back from the background, or a push woke it.
+    pub fn wake(&mut self, now: u64) {
+        self.now = now;
+        self.relays.wake(now);
+        self.machine.set_relays(self.relays.connected());
+        self.machine.tick();
+    }
+
     /// The push service answered for `event`.
     pub fn pushed(&mut self, event: &str, error: Option<String>) {
         self.machine.pushed(event, error);

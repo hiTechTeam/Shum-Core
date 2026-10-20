@@ -273,6 +273,23 @@ impl Relays {
         }
     }
 
+    /// The client is back from the background, or a push woke it: relays
+    /// waiting to retry connect at once, and open ones are pinged so a
+    /// connection that died meanwhile closes now instead of after a minute.
+    pub fn wake(&mut self, now: u64) {
+        for relay in 0..self.links.len() {
+            match &mut self.links[relay].state {
+                State::Waiting { until } => *until = now,
+                State::Open { last_ping, .. } if self.pings => {
+                    *last_ping = now;
+                    self.effects.push(Effect::Ping { relay });
+                }
+                _ => {}
+            }
+        }
+        self.tick(now);
+    }
+
     /// Call about once a second: connects, retries, pings and expires.
     pub fn tick(&mut self, now: u64) {
         for relay in 0..self.links.len() {
