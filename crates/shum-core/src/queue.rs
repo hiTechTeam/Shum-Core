@@ -70,7 +70,11 @@ pub enum Action {
 #[serde(rename_all = "camelCase")]
 pub enum PushKind {
     Message,
+    /// A new invitation: the contact sees a notification.
     Invitation,
+    /// An answer to an invitation: wakes the app silently (protocol section 08).
+    #[serde(rename = "invitation_update")]
+    InvitationUpdate,
     Reaction,
 }
 fn ble(actions: &mut Vec<Action>, peer: &Peer, packet: Packet) {
@@ -351,7 +355,11 @@ impl Outbox {
                 self.pending_push.push(Action::Push {
                     recipient: c.recipient.id(),
                     event: c.id.clone(),
-                    kind: PushKind::Invitation,
+                    kind: if c.kind == ControlKind::InvitationRequest {
+                        PushKind::Invitation
+                    } else {
+                        PushKind::InvitationUpdate
+                    },
                 });
             }
             c.retry.nostr_accepted = true;

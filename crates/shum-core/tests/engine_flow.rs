@@ -365,3 +365,61 @@ fn an_expired_message_is_sent_again_at_the_end_of_the_chat() {
         )
         .is_err());
 }
+#[test]
+fn an_invitation_notifies_and_its_answer_wakes_the_app_silently() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let pushes = |actions: Vec<Action>| -> Vec<PushKind> {
+        actions
+            .into_iter()
+            .filter_map(|a| match a {
+                Action::Push { kind, .. } => Some(kind),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut ea = Engine::new(a.card.clone()).unwrap();
+    ea.add_contact(b.card.clone()).unwrap();
+    let mut eb = Engine::new(b.card.clone()).unwrap();
+    eb.add_contact(a.card.clone()).unwrap();
+    let invite = ea
+        .invitation(
+            &b.card.id(),
+            InvitationAction::Request,
+            None,
+            &a.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    ea.outbox.relay_result(&id(1), true, now, false);
+    assert_eq!(
+        pushes(ea.tick(&routes, now + 1)),
+        vec![PushKind::Invitation]
+    );
+    eb.receive(
+        packet(&invite, |p| p.invitation.is_some()),
+        Source::Nostr(&a.card.nostr_key),
+        &b.context(&routes, now + 2, &id(2)),
+    )
+    .unwrap();
+    eb.invitation(
+        &a.card.id(),
+        InvitationAction::Accept,
+        None,
+        &b.context(&routes, now + 3, &id(3)),
+    )
+    .unwrap();
+    eb.outbox.relay_result(&id(3), true, now + 4, false);
+    assert_eq!(
+        pushes(eb.tick(&routes, now + 5)),
+        vec![PushKind::InvitationUpdate]
+    );
+    assert_eq!(
+        serde_json::to_value(PushKind::InvitationUpdate).unwrap(),
+        "invitation_update"
+    );
+}
