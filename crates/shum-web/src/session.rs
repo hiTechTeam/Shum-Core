@@ -6,9 +6,9 @@
 use crate::{error, invitation_json, relays::effect_json, Stored, WebProfile};
 use serde_json::{json, Value};
 use shum_session::{
-    driver::{quote_seeds, Driver, Output},
+    driver::{push_request, quote_seeds, Driver, Output},
     machine::Host,
-    Request,
+    now, Request,
 };
 use shum_store::{keys::ProfileKeys, records::Records};
 use wasm_bindgen::prelude::*;
@@ -73,13 +73,15 @@ pub struct WebSession {
 #[wasm_bindgen]
 impl WebSession {
     /// Starts the session of an opened profile. `id` and `name` are its
-    /// local entry; times are milliseconds since 1970 (`Date.now()`).
+    /// local entry; times are milliseconds since 1970 (`Date.now()`). With
+    /// `push` the page sends the `push` effects to the push service.
     #[wasm_bindgen(constructor)]
     pub fn new(
         profile: WebProfile,
         id: String,
         name: String,
         relays: Vec<String>,
+        push: bool,
         now: f64,
     ) -> Result<WebSession, JsError> {
         let WebProfile { keys, records, .. } = profile;
@@ -94,7 +96,7 @@ impl WebSession {
         let mut client = serde_json::Map::new();
         client.insert("owner".into(), "browser".into());
         // The browser cannot send WebSocket pings, so the relays get none.
-        let driver = Driver::new(host, false, client, &relays, false, now as u64).map_err(error)?;
+        let driver = Driver::new(host, push, client, &relays, false, now as u64).map_err(error)?;
         Ok(Self { driver })
     }
 
@@ -150,11 +152,19 @@ impl WebSession {
         self.driver.url(relay).map(Into::into)
     }
 
+    /// The push service answered for `event`; `error` is `undefined` when
+    /// it accepted the request.
+    pub fn pushed(&mut self, event: &str, error: Option<String>) {
+        self.driver.pushed(event, error);
+    }
+
     /// What the page does now, in this order, as a JSON array: `store`
     /// (write, delete) writes to keep first; `renamed` (name); the relay
-    /// effects of `WebRelays.effects`; `reply` (id, ok or error).
+    /// effects of `WebRelays.effects`; `reply` (id, ok or error); `push`
+    /// (event, path, headers, body in base64) to POST to the push service.
     pub fn effects(&mut self) -> String {
         let outputs = self.driver.outputs();
+        let mut failed = Vec::new();
         let host = &mut self.driver.machine.host;
         let mut all: Vec<Value> = std::mem::take(&mut host.writes);
         if std::mem::take(&mut host.renamed) {
@@ -169,9 +179,22 @@ impl WebSession {
                     reply["id"] = id.into();
                     all.push(reply);
                 }
-                // The browser has neither push requests nor Bluetooth.
-                Output::Push { .. } | Output::SendBle { .. } => {}
+                Output::Push {
+                    card,
+                    key,
+                    recipient,
+                    event,
+                    kind,
+                } => match push_request(&card, &key, &recipient, &event, kind, now() as u64) {
+                    Ok(push) => all.push(push),
+                    Err(e) => failed.push((event, e.to_string())),
+                },
+                // The browser has no Bluetooth.
+                Output::SendBle { .. } => {}
             }
+        }
+        for (event, e) in failed {
+            self.driver.pushed(&event, Some(e));
         }
         Value::from(all).to_string()
     }

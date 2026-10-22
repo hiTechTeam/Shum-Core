@@ -187,6 +187,43 @@ impl<H: Host> Driver<H> {
     }
 }
 
+/// A signed push request (protocol section 08) for a client that sends it
+/// itself: `{"type": "push", "event", "path", "headers", "body"}` with the
+/// body in base64. `now` is milliseconds since 1970.
+pub fn push_request(
+    card: &Card,
+    key: &shum_core::crypto::Secret32,
+    recipient: &str,
+    event: &str,
+    kind: PushKind,
+    now: u64,
+) -> anyhow::Result<Value> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use shum_transport_nostr::push;
+    let body = push::notification_body(card, recipient, event, kind)?;
+    let signed = push::signed_request(
+        "POST",
+        "/v1/notifications",
+        body,
+        key,
+        (now / 1000) as i64,
+        &hex::encode(crate::random::<16>()?),
+    )?;
+    Ok(serde_json::json!({
+        "type": "push",
+        "event": event,
+        "path": "/v1/notifications",
+        "headers": {
+            "Content-Type": "application/json",
+            "X-Shum-Public-Key": signed.public_key,
+            "X-Shum-Timestamp": signed.timestamp,
+            "X-Shum-Nonce": signed.nonce,
+            "X-Shum-Signature": signed.signature,
+        },
+        "body": STANDARD.encode(signed.body),
+    }))
+}
+
 /// Avatar seeds are 64-bit; JavaScript numbers would round them, so clients
 /// with JavaScript interfaces get them as text.
 pub fn quote_seeds(value: &mut Value) {

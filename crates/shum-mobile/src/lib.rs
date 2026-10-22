@@ -10,7 +10,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
 use shum_core::crypto::Secret32;
 use shum_session::{
-    driver::{Driver, Output},
+    driver::{push_request, Driver, Output},
     machine::{Host, Nearby},
     Failure, Request,
 };
@@ -336,7 +336,7 @@ impl MobileSession {
                     recipient,
                     event,
                     kind,
-                } => match push_json(&card, &key, &recipient, &event, kind, now) {
+                } => match push_request(&card, &key, &recipient, &event, kind, now) {
                     Ok(push) => all.push(push),
                     Err(error) => driver.pushed(&event, Some(error.to_string())),
                 },
@@ -378,42 +378,6 @@ fn relay_json(effect: shum_transport_nostr::links::Effect) -> Option<Value> {
         // Events and publication results stay inside the session.
         Effect::Event { .. } | Effect::Published { .. } => return None,
     })
-}
-
-/// A signed push request (protocol section 08), ready to POST.
-fn push_json(
-    card: &shum_core::card::Card,
-    key: &Secret32,
-    recipient: &str,
-    event: &str,
-    kind: shum_core::queue::PushKind,
-    now: u64,
-) -> anyhow::Result<Value> {
-    use shum_transport_nostr::push;
-    let body = push::notification_body(card, recipient, event, kind)?;
-    let mut nonce = [0; 16];
-    getrandom::fill(&mut nonce).map_err(|_| anyhow::anyhow!("random source unavailable"))?;
-    let signed = push::signed_request(
-        "POST",
-        "/v1/notifications",
-        body,
-        key,
-        (now / 1000) as i64,
-        &hex::encode(nonce),
-    )?;
-    Ok(json!({
-        "type": "push",
-        "event": event,
-        "path": "/v1/notifications",
-        "headers": {
-            "Content-Type": "application/json",
-            "X-Shum-Public-Key": signed.public_key,
-            "X-Shum-Timestamp": signed.timestamp,
-            "X-Shum-Nonce": signed.nonce,
-            "X-Shum-Signature": signed.signature,
-        },
-        "body": STANDARD.encode(signed.body),
-    }))
 }
 
 /// Shum-Core's version of the request API, for checks from Swift.
