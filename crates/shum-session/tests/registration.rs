@@ -1,5 +1,7 @@
 //! A new profile is checked, signed, selected and holds default settings.
-use shum_session::registration::{create, prepare, validate_name, Settings};
+use shum_session::registration::{
+    create, current_push_url, prepare, validate_name, Settings, DEFAULT_PUSH_URL,
+};
 use shum_store::{profiles::Profiles, vault::KeyMode};
 
 /// Profile data must be readable by its owner only, as in the real data folder.
@@ -68,4 +70,20 @@ fn names_are_checked_before_anything_is_written() {
         .unwrap()
         .1
         .is_empty());
+}
+
+#[test]
+fn profiles_that_stored_the_retired_push_service_use_the_current_one() {
+    assert_eq!(DEFAULT_PUSH_URL, "https://push.getshum.tech");
+    for old in [
+        "https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net",
+        "https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net/",
+    ] {
+        assert_eq!(current_push_url(old), DEFAULT_PUSH_URL);
+    }
+    // A push service the person chose stays theirs.
+    assert_eq!(
+        current_push_url("https://push.example.org"),
+        "https://push.example.org"
+    );
 }

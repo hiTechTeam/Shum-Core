@@ -177,7 +177,9 @@ pub async fn serve(
             .map(|s| s.to_string())
             .collect()
     };
-    let push = settings["pushURL"].as_str().map(str::to_owned);
+    let push = settings["pushURL"]
+        .as_str()
+        .map(|url| crate::registration::current_push_url(url).to_owned());
     let session = Session::new(open, &relays, push.as_deref(), client)?;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let token = random::<32>()?;

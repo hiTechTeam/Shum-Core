@@ -12,7 +12,19 @@ use shum_store::{
 use std::path::Path;
 
 /// Push service used by new profiles unless the person chooses otherwise.
-pub const DEFAULT_PUSH_URL: &str = "https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net";
+pub const DEFAULT_PUSH_URL: &str = "https://push.getshum.tech";
+/// Push services that no longer run. Profiles that stored one of them use
+/// [`DEFAULT_PUSH_URL`] instead, so nobody has to change a setting.
+const RETIRED_PUSH_URLS: &[&str] = &["https://d5d5lr0h6812sbjiiqoa.ccx97b51.apigw.yandexcloud.net"];
+
+/// The push service to call for a stored setting.
+pub fn current_push_url(stored: &str) -> &str {
+    if RETIRED_PUSH_URLS.contains(&stored.trim_end_matches('/')) {
+        DEFAULT_PUSH_URL
+    } else {
+        stored
+    }
+}
 
 fn ensure(condition: bool, text: &'static str) -> Result<()> {
     if condition {
