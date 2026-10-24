@@ -14,6 +14,7 @@ name = "shum_mobile"
 [dependencies]
 shum-core.workspace = true
 shum-session.workspace = true
+shum-transport-ble.workspace = true
 shum-store = { workspace = true, features = ["native"] }
 shum-transport-nostr.workspace = true
 anyhow = "1"

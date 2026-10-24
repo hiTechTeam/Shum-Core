@@ -1,7 +1,9 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/Peripheral.swift");
     println!("cargo:rerun-if-changed=native/Info.plist");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+        || std::env::var_os("CARGO_FEATURE_RADIO").is_none()
+    {
         return;
     }
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());

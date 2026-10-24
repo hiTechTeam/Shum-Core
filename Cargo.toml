@@ -19,7 +19,7 @@ repository = "https://github.com/hiTechTeam/Shum-Core"
 [workspace.dependencies]
 shum-core = { path = "crates/shum-core" }
 shum-transport-nostr = { path = "crates/shum-transport-nostr", default-features = false }
-shum-transport-ble = { path = "crates/shum-transport-ble" }
+shum-transport-ble = { path = "crates/shum-transport-ble", default-features = false }
 shum-store = { path = "crates/shum-store", default-features = false }
 shum-session = { path = "crates/shum-session", default-features = false }
 

@@ -6,16 +6,21 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["radio"]
+# Native GATT I/O for desktop clients; without it only `mesh` builds (iPhone).
+radio = ["dep:base64", "dep:btleplug", "dep:futures-util", "dep:serde", "dep:serde_json", "dep:tokio", "dep:uuid", "dep:tempfile"]
+
 [dependencies]
 shum-core.workspace = true
 anyhow = "1"
-base64 = "0.22"
-btleplug = "0.13.4"
-futures-util = "0.3"
+base64 = { version = "0.22", optional = true }
+btleplug = { version = "0.13.4", optional = true }
+futures-util = { version = "0.3", optional = true }
 getrandom = "0.4"
 hex = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
-uuid = "1"
-tempfile = "3"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"], optional = true }
+uuid = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }

@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 
 uniffi::setup_scaffolding!();
 
+mod ble;
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum MobileError {
     #[error("{0}")]
@@ -124,6 +126,8 @@ fn answer(result: Result<Value, Failure>) -> Value {
 #[derive(uniffi::Object)]
 pub struct MobileSession {
     driver: Mutex<Driver<StoreHost>>,
+    /// Shum-Core's Bluetooth mesh; always locked after `driver`.
+    ble: Mutex<ble::Ble>,
 }
 
 #[uniffi::export]
@@ -174,6 +178,7 @@ impl MobileSession {
         }
         Ok(Arc::new(Self {
             driver: Mutex::new(driver),
+            ble: Mutex::new(ble::Ble::default()),
         }))
     }
 
@@ -221,7 +226,9 @@ impl MobileSession {
 
     /// Call about once a second.
     pub fn tick(&self, now: u64) {
-        self.lock().tick(now);
+        let mut driver = self.lock();
+        driver.tick(now);
+        self.ble().tick(&mut driver, now);
     }
 
     /// The app is back in the foreground, or a push woke it: relays
@@ -311,10 +318,13 @@ impl MobileSession {
     /// `connect` (relay, attempt), `send` (relay, text), `ping` (relay),
     /// `close` (relay); news `connected`, `disconnected`, `eose` (url);
     /// `renamed` (name); `reply` (id, ok or error); `push` (event, path,
-    /// headers, body in base64) to POST to the push service; `ble` (peer,
-    /// packet bytes in base64) for a nearby device.
+    /// headers, body in base64) to POST to the push service; `ble-frames`
+    /// (link, frames in base64) for the radio to write while Shum-Core's mesh
+    /// runs, or `ble` (peer, packet bytes in base64) for the app's own
+    /// Bluetooth before it does.
     pub fn effects(&self, now: u64) -> String {
         let mut driver = self.lock();
+        let mut ble = self.ble();
         let outputs = driver.outputs();
         let mut all = Vec::new();
         let host = &mut driver.machine.host;
@@ -340,7 +350,9 @@ impl MobileSession {
                     Ok(push) => all.push(push),
                     Err(error) => driver.pushed(&event, Some(error.to_string())),
                 },
-                // The packet goes over Bluetooth as its JSON bytes.
+                // Shum-Core's mesh sends it when Bluetooth runs through it;
+                // otherwise the packet's JSON bytes go to the app's own.
+                Output::SendBle { peer, packet } if ble.send(&mut driver, &peer, &packet, now) => {}
                 Output::SendBle { peer, packet } => {
                     match shum_core::canonical::encode(packet.as_ref()) {
                         Ok(bytes) => all.push(json!({
@@ -353,6 +365,7 @@ impl MobileSession {
                 }
             }
         }
+        all.extend(ble.take_frames());
         Value::from(all).to_string()
     }
 }
@@ -360,6 +373,9 @@ impl MobileSession {
 impl MobileSession {
     fn lock(&self) -> std::sync::MutexGuard<'_, Driver<StoreHost>> {
         self.driver.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn ble(&self) -> std::sync::MutexGuard<'_, ble::Ble> {
+        self.ble.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

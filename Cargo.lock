@@ -2855,6 +2855,7 @@ dependencies = [
  "shum-core",
  "shum-session",
  "shum-store",
+ "shum-transport-ble",
  "shum-transport-nostr",
  "thiserror 2.0.21",
  "uniffi 0.28.3",
