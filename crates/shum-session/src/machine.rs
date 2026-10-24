@@ -148,6 +148,9 @@ pub struct Machine<H: Host> {
     pub engine: Engine,
     client: Map<String, Value>,
     nearby: HashMap<String, NearbyPeer>,
+    /// Grows whenever someone comes or goes nearby or their distance
+    /// changes, which stores nothing, so clients know to show it.
+    pub nearby_changes: u64,
     /// Bluetooth status for snapshots; native clients keep it up to date.
     pub bluetooth: Value,
     relays: Vec<String>,
@@ -182,6 +185,7 @@ impl<H: Host> Machine<H> {
             engine,
             client,
             nearby: HashMap::new(),
+            nearby_changes: 0,
             bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             relays: Vec::new(),
             push,
@@ -228,6 +232,9 @@ impl<H: Host> Machine<H> {
 
     /// Bluetooth is off or used by another profile: nobody is nearby.
     pub fn clear_nearby(&mut self) {
+        if !self.nearby.is_empty() {
+            self.nearby_changes += 1;
+        }
         self.nearby.clear();
     }
 
@@ -873,7 +880,9 @@ impl<H: Host> Machine<H> {
         match update {
             Nearby::State { role, state } => self.bluetooth[role] = json!(state),
             Nearby::Gone(id) => {
-                self.nearby.remove(&id);
+                if self.nearby.remove(&id).is_some() {
+                    self.nearby_changes += 1;
+                }
             }
             Nearby::Peer {
                 routing,
@@ -891,6 +900,12 @@ impl<H: Host> Machine<H> {
                         })?;
                     }
                     let peer = Peer::authenticated(routing.clone(), *card, &noise)?;
+                    let shown = |p: &NearbyPeer| (p.peer.card.id(), p.distance, p.direct);
+                    if self.nearby.get(&routing).map(shown)
+                        != Some((peer.card.id(), distance, direct))
+                    {
+                        self.nearby_changes += 1;
+                    }
                     self.nearby.insert(
                         routing,
                         NearbyPeer {
