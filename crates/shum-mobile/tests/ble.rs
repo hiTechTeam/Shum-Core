@@ -184,11 +184,12 @@ fn two_iphones_meet_and_talk_over_shum_cores_bluetooth() {
         "{sent}"
     );
 
-    // Going out of reach clears them from nearby, and the revision tells
-    // the app to show it although nothing was stored.
-    let before = anya.session.revision();
+    // Going out of reach clears them from nearby; the nearby revision tells
+    // the app to show it, while the stored state did not change.
+    let (stored, nearby) = (anya.session.revision(), anya.session.nearby_revision());
     anya.session.ble_disconnected(anya.link.into());
-    assert!(anya.session.revision() > before);
+    assert!(anya.session.nearby_revision() > nearby);
+    assert_eq!(anya.session.revision(), stored);
     let away = snapshot(&anya);
     assert_ne!(contact(&away, &boris.card).unwrap()["nearby"], true);
     let _ = std::fs::remove_dir_all(&folder);

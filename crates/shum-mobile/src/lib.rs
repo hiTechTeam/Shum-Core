@@ -186,11 +186,16 @@ impl MobileSession {
         self.lock().snapshot().to_string()
     }
 
-    /// Grows with every change to the stored state or to who is nearby;
-    /// Swift reads `state()` and `snapshot()` again only when it did.
+    /// Grows with every change to the stored state; Swift reads `state()`
+    /// again only when it did.
     pub fn revision(&self) -> u64 {
-        let driver = self.lock();
-        driver.machine.host.commits + driver.machine.nearby_changes
+        self.lock().machine.host.commits
+    }
+
+    /// Grows when someone comes or goes nearby or their distance changes,
+    /// which stores nothing; Swift then reads `snapshot()` alone.
+    pub fn nearby_revision(&self) -> u64 {
+        self.lock().machine.nearby_changes
     }
 
     /// The stored profile state (protocol section 09) as JSON, the same
