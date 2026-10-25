@@ -423,3 +423,141 @@ fn an_invitation_notifies_and_its_answer_wakes_the_app_silently() {
         "invitation_update"
     );
 }
+
+/// One profile on two devices: what one device sends shows as sent on the
+/// other, its delivery status follows there, and reading on one reads on
+/// the other. Only the profile's own key can send these copies.
+#[test]
+fn a_profile_on_two_devices_shares_what_it_sends_and_reads() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = accepted(&a, &b);
+    let mut laptop = accepted(&a, &b);
+    let mut igor = accepted(&b, &a);
+
+    let sent = phone
+        .send(
+            &b.card.id(),
+            "с телефона",
+            None,
+            &Secret32::new([80; 32]),
+            &a.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    let message = packet(&sent, |p| p.envelope.is_some());
+    let (operation, recipient, copy) = sent
+        .iter()
+        .find_map(|action| match action {
+            Action::SendNostr {
+                operation,
+                recipient,
+                packet,
+            } if packet.own_copy.is_some() => {
+                Some((operation.clone(), recipient.id(), *packet.clone()))
+            }
+            _ => None,
+        })
+        .expect("a copy for the profile's other devices");
+    assert_eq!(
+        recipient,
+        a.card.id(),
+        "the copy goes to the profile itself"
+    );
+
+    // Another key cannot plant a sent message.
+    let mut fooled = accepted(&a, &b);
+    fooled
+        .receive(
+            copy.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 1, &id(2)),
+        )
+        .unwrap();
+    assert!(fooled.outbox.messages.is_empty());
+
+    laptop
+        .receive(
+            copy,
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 1, &id(2)),
+        )
+        .unwrap();
+    let mirrored = laptop
+        .outbox
+        .messages
+        .iter()
+        .find(|m| m.envelope.id == id(1))
+        .expect("the laptop shows the message as sent");
+    assert!(mirrored.mirror);
+    assert_eq!(mirrored.plaintext.as_ref().unwrap().text, "с телефона");
+    // The phone delivers it; the laptop does not send it again.
+    assert!(laptop
+        .tick(&routes, now + 60_000)
+        .iter()
+        .all(|action| !matches!(action, Action::SendNostr { packet, .. } | Action::SendBle { packet, .. } if packet.envelope.is_some() || packet.own_copy.is_some())));
+
+    // Igor's receipt reaches both devices of the profile.
+    igor.receive(
+        message,
+        Source::Nostr(&a.card.nostr_key),
+        &b.context(&routes, now + 2, &id(3)),
+    )
+    .unwrap();
+    let receipt = packet(&igor.tick(&routes, now + 3), |p| p.receipt.is_some());
+    laptop
+        .receive(
+            receipt,
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 4, &id(4)),
+        )
+        .unwrap();
+    assert_eq!(
+        laptop.outbox.messages[0].delivery.status,
+        Delivery::Delivered
+    );
+
+    // Once a relay took the copy, the phone stops offering it.
+    phone.outbox.relay_result(&operation, true, now + 5, false);
+    assert!(phone.tick(&routes, now + 120_000).iter().all(
+        |action| !matches!(action, Action::SendNostr { packet, .. } if packet.own_copy.is_some())
+    ));
+
+    // A message to the profile reaches both devices; reading it on the
+    // phone reads it on the laptop.
+    let reply = igor
+        .send(
+            &a.card.id(),
+            "привет обоим",
+            None,
+            &Secret32::new([81; 32]),
+            &b.context(&routes, now + 6, &id(5)),
+        )
+        .unwrap();
+    let incoming = packet(&reply, |p| p.envelope.is_some());
+    for device in [&mut phone, &mut laptop] {
+        device
+            .receive(
+                incoming.clone(),
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 7, &id(6)),
+            )
+            .unwrap();
+        assert!(device.inbox.messages.iter().any(|m| m.unread));
+    }
+    let read = phone
+        .mark_read(&b.card.id(), &a.context(&routes, now + 8, &id(7)))
+        .unwrap();
+    laptop
+        .receive(
+            packet(&read, |p| p.own_read.is_some()),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 9, &id(8)),
+        )
+        .unwrap();
+    assert!(laptop.inbox.messages.iter().all(|m| !m.unread && m.read));
+}

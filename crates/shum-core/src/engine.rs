@@ -312,6 +312,30 @@ impl Engine {
             let _ = self.outbox.apply_receipt(receipt.clone(), incoming, c.now);
             return Ok(vec![]);
         }
+        // Only this profile's own Nostr key sends these, from its other devices.
+        if packet.own_copy.is_some() || packet.own_read.is_some() {
+            if !matches!(&source, Source::Nostr(key) if *key == self.inbox.own.nostr_key) {
+                return Ok(vec![]);
+            }
+            if let Some(copy) = packet.own_copy {
+                if copy.validate(&self.inbox.own, c.now).is_ok() {
+                    let recipient = copy.envelope.recipient.clone();
+                    if !self.inbox.contacts.contains_key(&recipient.id()) {
+                        let _ = self.add_contact(recipient);
+                    }
+                    self.outbox.mirror(copy);
+                }
+            }
+            if let Some(read) = packet.own_read.filter(|r| r.validate().is_ok()) {
+                for message in &mut self.inbox.messages {
+                    if read.message_ids.contains(&message.envelope.id) {
+                        message.unread = false;
+                        message.read = true;
+                    }
+                }
+            }
+            return Ok(vec![]);
+        }
         if let Some(e) = &packet.envelope {
             if e.recipient.id() != self.inbox.own.id() {
                 if let Source::Ble { session_noise, .. } = &source {
@@ -455,8 +479,10 @@ impl Engine {
     pub fn mark_read(&mut self, id: &str, c: &Context<'_>) -> Result<Vec<Action>> {
         self.live()?;
         self.keys(&c.keys)?;
+        let mut read = vec![];
         for message in &mut self.inbox.messages {
             if message.envelope.sender.id() == id && message.unread {
+                read.push(message.envelope.id.clone());
                 if message.envelope.expires_at > c.now {
                     let r = Receipt::create(
                         &message.envelope,
@@ -471,6 +497,22 @@ impl Engine {
                 message.unread = false;
                 message.read = true;
             }
+        }
+        // This profile's other devices show them read too.
+        for (part, ids) in read.chunks(OwnRead::MAX).enumerate() {
+            self.outbox.enqueue_control(QueuedControl {
+                id: format!("own-read:{}:{part}", c.uuid),
+                recipient: self.inbox.own.clone(),
+                expires: c.now.saturating_add(DAY_MS),
+                packet: Packet {
+                    own_read: Some(OwnRead {
+                        message_ids: ids.to_vec(),
+                    }),
+                    ..Packet::default()
+                },
+                kind: ControlKind::OwnRead,
+                retry: Retry::default(),
+            });
         }
         Ok(self.tick(c.routes, c.now))
     }
@@ -642,6 +684,9 @@ fn packet_parties(packet: &Packet) -> HashSet<String> {
     if let Some(r) = &packet.receipt {
         ids.insert(r.sender.id());
         ids.insert(r.destination.id());
+    }
+    if let Some(copy) = &packet.own_copy {
+        ids.insert(copy.envelope.recipient.id());
     }
     macro_rules! parties {
         ($field:ident) => {

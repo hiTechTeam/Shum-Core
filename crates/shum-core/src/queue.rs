@@ -2,7 +2,7 @@
 //! returned actions. Neither this module nor an action performs I/O.
 use crate::{
     card::Card,
-    packet::{Envelope, Packet, Plaintext, ProfileSync, Receipt},
+    packet::{Envelope, OwnCopy, Packet, Plaintext, ProfileSync, Receipt},
     rules::{ble_delay_ms, nostr_delay_ms, profile_delay_ms, Delivery, DeliveryState},
     Error, Result,
 };
@@ -90,6 +90,8 @@ fn nostr(actions: &mut Vec<Action>, operation: String, recipient: Card, packet: 
         packet: Box::new(packet),
     });
 }
+/// Relay operations for the own copy of a message start with this.
+const OWN_COPY: &str = "own-copy:";
 fn due(last: Option<i64>, now: i64, delay: i64) -> bool {
     last.is_none_or(|t| now.saturating_sub(t) >= delay)
 }
@@ -129,6 +131,12 @@ pub struct Outgoing {
     pub offered: HashSet<String>,
     pub push_after: Option<i64>,
     pub push_sent: bool,
+    /// Sent from another of this profile's devices, which delivers it.
+    pub mirror: bool,
+    /// A relay took the copy for this profile's other devices.
+    pub copied: bool,
+    /// When that copy was last offered to the relays.
+    pub copy_offered: Option<i64>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlKind {
@@ -136,6 +144,8 @@ pub enum ControlKind {
     InvitationReply,
     Retract,
     Reaction,
+    /// Messages read here, for this profile's other devices.
+    OwnRead,
 }
 #[derive(Clone, Debug)]
 pub struct QueuedControl {
@@ -184,7 +194,10 @@ impl Outbox {
             || self
                 .messages
                 .iter()
-                .filter(|m| matches!(m.delivery.status, Delivery::Queued | Delivery::Forwarding))
+                .filter(|m| {
+                    !m.mirror
+                        && matches!(m.delivery.status, Delivery::Queued | Delivery::Forwarding)
+                })
                 .count()
                 >= 200
             || self.messages.iter().any(|m| m.envelope.id == envelope.id)
@@ -199,8 +212,40 @@ impl Outbox {
             offered: HashSet::new(),
             push_after: None,
             push_sent: false,
+            mirror: false,
+            copied: false,
+            copy_offered: None,
         });
         Ok(())
+    }
+    /// A message sent from another of this profile's devices: shown as sent,
+    /// and delivered by that device. Returns whether it is new here.
+    pub fn mirror(&mut self, copy: OwnCopy) -> bool {
+        if self.retired
+            || self
+                .messages
+                .iter()
+                .any(|m| m.envelope.id == copy.envelope.id)
+        {
+            return false;
+        }
+        self.messages.push(Outgoing {
+            envelope: copy.envelope,
+            plaintext: Some(copy.plaintext),
+            delivery: DeliveryState {
+                status: Delivery::Forwarding,
+                nostr_accepted: true,
+                ..DeliveryState::default()
+            },
+            retry: Retry::default(),
+            offered: HashSet::new(),
+            push_after: None,
+            push_sent: true,
+            mirror: true,
+            copied: true,
+            copy_offered: None,
+        });
+        true
     }
     pub fn enqueue_control(&mut self, control: QueuedControl) {
         if self.retired {
@@ -219,7 +264,7 @@ impl Outbox {
                 .as_ref()
                 .zip(control.packet.reaction.as_ref())
                 .is_none_or(|(old, new)| old.fields.message_id != new.fields.message_id),
-            ControlKind::Retract => c.id != control.id,
+            ControlKind::Retract | ControlKind::OwnRead => c.id != control.id,
         });
         self.controls.push(control);
     }
@@ -330,6 +375,12 @@ impl Outbox {
         if !accepted || self.retired {
             return;
         }
+        if let Some(id) = operation.strip_prefix(OWN_COPY) {
+            if let Some(m) = self.messages.iter_mut().find(|m| m.envelope.id == id) {
+                m.copied = true;
+            }
+            return;
+        }
         if let Some(m) = self
             .messages
             .iter_mut()
@@ -421,7 +472,7 @@ impl Outbox {
             if sent >= 4 {
                 break;
             }
-            if !matches!(m.delivery.status, Delivery::Queued | Delivery::Forwarding) {
+            if m.mirror || !matches!(m.delivery.status, Delivery::Queued | Delivery::Forwarding) {
                 continue;
             }
             let packet = Packet {
@@ -468,6 +519,7 @@ impl Outbox {
             ControlKind::InvitationRequest,
             ControlKind::Retract,
             ControlKind::Reaction,
+            ControlKind::OwnRead,
         ] {
             // Requests and replies share the invitation pass of four.
             for c in self
@@ -489,7 +541,11 @@ impl Outbox {
                     8
                 })
             {
-                if let Some(peer) = routes.direct(&c.recipient) {
+                // This profile's other devices read it from the relays.
+                if let Some(peer) = routes
+                    .direct(&c.recipient)
+                    .filter(|_| c.kind != ControlKind::OwnRead)
+                {
                     let delay = if matches!(
                         c.kind,
                         ControlKind::InvitationRequest | ControlKind::InvitationReply
@@ -510,6 +566,33 @@ impl Outbox {
                         c.packet.clone(),
                     );
                 }
+            }
+        }
+        // Copies for this profile's other devices, until a relay takes one.
+        if routes.internet {
+            for m in self
+                .messages
+                .iter_mut()
+                .filter(|m| !m.mirror && !m.copied && m.envelope.expires_at > now)
+                .filter(|m| due(m.copy_offered, now, 30000))
+                .take(8)
+            {
+                let Some(plaintext) = m.plaintext.clone() else {
+                    continue;
+                };
+                m.copy_offered = Some(now);
+                nostr(
+                    &mut actions,
+                    format!("{OWN_COPY}{}", m.envelope.id),
+                    own.clone(),
+                    Packet {
+                        own_copy: Some(OwnCopy {
+                            envelope: m.envelope.clone(),
+                            plaintext,
+                        }),
+                        ..Packet::default()
+                    },
+                );
             }
         }
         let mut sent = 0;

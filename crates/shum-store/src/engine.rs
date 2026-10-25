@@ -173,6 +173,10 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
                 offered: strings(&row["forwardedTo"])?,
                 push_after: None,
                 push_sent: flag(&row["cliPushSent"])?,
+                mirror: row["sentFromOtherDevice"].as_bool().unwrap_or(false),
+                // Messages from before own copies existed are not sent again.
+                copied: row["ownCopySent"].as_bool().unwrap_or(true),
+                copy_offered: None,
             });
         } else {
             engine.inbox.messages.push(ReceivedMessage {
@@ -486,6 +490,8 @@ pub fn project(previous: &Value, engine: &Engine, now: i64) -> Result<Value> {
         )?;
         row["forwardedTo"] = sorted(&message.offered);
         row["cliPushSent"] = json!(message.push_sent);
+        row["sentFromOtherDevice"] = json!(message.mirror);
+        row["ownCopySent"] = json!(message.copied);
         if let Some(receipt) = &message.delivery.receipt {
             if row["deliveredAt"].is_null() {
                 row["deliveredAt"] = date(receipt.timestamp);

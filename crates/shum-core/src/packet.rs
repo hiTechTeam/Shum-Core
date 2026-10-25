@@ -364,6 +364,46 @@ pub struct InvitationAvatar {
     #[serde(with = "canonical::bytes")]
     pub signature: Vec<u8>,
 }
+/// A message this profile sent from another of its devices: the envelope
+/// the contact got, and its text, which the envelope hides from everyone but
+/// the contact. It travels only to the profile's own Nostr key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnCopy {
+    pub envelope: Envelope,
+    pub plaintext: Plaintext,
+}
+impl OwnCopy {
+    pub fn validate(&self, own: &Card, now: i64) -> Result<()> {
+        // The card may have changed since: the same profile, the same key.
+        if self.envelope.sender.id() != own.id()
+            || self.envelope.sender.signing_key != own.signing_key
+        {
+            return Err(Error::Invalid("own copy sender"));
+        }
+        self.envelope.validate(now)?;
+        self.plaintext.validate(&self.envelope)
+    }
+}
+/// Messages this profile read on another of its devices.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnRead {
+    #[serde(rename = "messageIDs")]
+    pub message_ids: Vec<String>,
+}
+impl OwnRead {
+    pub const MAX: usize = 200;
+    pub fn validate(&self) -> Result<()> {
+        if self.message_ids.is_empty()
+            || self.message_ids.len() > Self::MAX
+            || self.message_ids.iter().any(|id| !uuid(id))
+        {
+            return Err(Error::Invalid("own read"));
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Packet {
@@ -390,6 +430,10 @@ pub struct Packet {
     pub retract: Option<Retract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaction: Option<Reaction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_copy: Option<OwnCopy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_read: Option<OwnRead>,
 }
 impl Packet {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
@@ -407,6 +451,8 @@ impl Packet {
             packet.profile_sync.is_some(),
             packet.retract.is_some(),
             packet.reaction.is_some(),
+            packet.own_copy.is_some(),
+            packet.own_read.is_some(),
         ]
         .into_iter()
         .filter(|v| *v)
@@ -550,6 +596,8 @@ impl Default for Packet {
             profile_sync: None,
             retract: None,
             reaction: None,
+            own_copy: None,
+            own_read: None,
         }
     }
 }
