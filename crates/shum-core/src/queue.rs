@@ -146,6 +146,16 @@ pub enum ControlKind {
     Reaction,
     /// Messages read here, for this profile's other devices.
     OwnRead,
+    /// Reactions set here, for this profile's other devices.
+    OwnReaction,
+    /// Messages withdrawn here, for this profile's other devices.
+    OwnRetract,
+}
+impl ControlKind {
+    /// Goes only to this profile's own Nostr key, never over Bluetooth.
+    pub fn own(self) -> bool {
+        matches!(self, Self::OwnRead | Self::OwnReaction | Self::OwnRetract)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct QueuedControl {
@@ -264,7 +274,15 @@ impl Outbox {
                 .as_ref()
                 .zip(control.packet.reaction.as_ref())
                 .is_none_or(|(old, new)| old.fields.message_id != new.fields.message_id),
-            ControlKind::Retract | ControlKind::OwnRead => c.id != control.id,
+            ControlKind::OwnReaction => c
+                .packet
+                .own_reaction
+                .as_ref()
+                .zip(control.packet.own_reaction.as_ref())
+                .is_none_or(|(old, new)| old.fields.message_id != new.fields.message_id),
+            ControlKind::Retract | ControlKind::OwnRead | ControlKind::OwnRetract => {
+                c.id != control.id
+            }
         });
         self.controls.push(control);
     }
@@ -520,6 +538,8 @@ impl Outbox {
             ControlKind::Retract,
             ControlKind::Reaction,
             ControlKind::OwnRead,
+            ControlKind::OwnReaction,
+            ControlKind::OwnRetract,
         ] {
             // Requests and replies share the invitation pass of four.
             for c in self
@@ -542,10 +562,7 @@ impl Outbox {
                 })
             {
                 // This profile's other devices read it from the relays.
-                if let Some(peer) = routes
-                    .direct(&c.recipient)
-                    .filter(|_| c.kind != ControlKind::OwnRead)
-                {
+                if let Some(peer) = routes.direct(&c.recipient).filter(|_| !c.kind.own()) {
                     let delay = if matches!(
                         c.kind,
                         ControlKind::InvitationRequest | ControlKind::InvitationReply

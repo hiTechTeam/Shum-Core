@@ -561,3 +561,156 @@ fn a_profile_on_two_devices_shares_what_it_sends_and_reads() {
         .unwrap();
     assert!(laptop.inbox.messages.iter().all(|m| !m.unread && m.read));
 }
+
+/// One profile on two devices: a reaction set on one shows on the other, and
+/// a message withdrawn on one disappears from the other, even when the copy
+/// of that message arrives late. Only the profile's own key can send these.
+#[test]
+fn a_profile_on_two_devices_shares_reactions_and_withdrawals() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = accepted(&a, &b);
+    let mut laptop = accepted(&a, &b);
+    let mut igor = accepted(&b, &a);
+
+    let reply = igor
+        .send(
+            &a.card.id(),
+            "реакцию сюда",
+            None,
+            &Secret32::new([82; 32]),
+            &b.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    let incoming = packet(&reply, |p| p.envelope.is_some());
+    for device in [&mut phone, &mut laptop] {
+        device
+            .receive(
+                incoming.clone(),
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 1, &id(2)),
+            )
+            .unwrap();
+    }
+    let reacted = phone
+        .toggle_reaction(
+            &id(1),
+            ReactionKind::Heart,
+            &a.context(&routes, now + 2, &id(3)),
+        )
+        .unwrap();
+    assert!(
+        reacted.iter().any(|action| matches!(action, Action::SendNostr { recipient, packet, .. } if packet.reaction.is_some() && recipient.id() == b.card.id())),
+        "Igor still gets the reaction"
+    );
+    let own = packet(&reacted, |p| p.own_reaction.is_some());
+    let mark = (id(1), a.card.id());
+
+    // Another key cannot set a reaction for the profile.
+    let mut fooled = accepted(&a, &b);
+    fooled
+        .receive(
+            incoming.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 1, &id(2)),
+        )
+        .unwrap();
+    fooled
+        .receive(
+            own.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 3, &id(4)),
+        )
+        .unwrap();
+    assert!(!fooled.inbox.reactions.contains_key(&mark));
+
+    laptop
+        .receive(
+            own,
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 3, &id(4)),
+        )
+        .unwrap();
+    assert_eq!(
+        laptop.inbox.reactions[&mark].reaction,
+        Some(ReactionKind::Heart)
+    );
+    // Taking it back on the phone takes it back on the laptop.
+    let cleared = phone
+        .toggle_reaction(
+            &id(1),
+            ReactionKind::Heart,
+            &a.context(&routes, now + 4, &id(5)),
+        )
+        .unwrap();
+    laptop
+        .receive(
+            packet(&cleared, |p| p.own_reaction.is_some()),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 5, &id(6)),
+        )
+        .unwrap();
+    assert_eq!(laptop.inbox.reactions[&mark].reaction, None);
+
+    // A message withdrawn on the phone leaves the laptop too.
+    let sent = phone
+        .send(
+            &b.card.id(),
+            "передумала",
+            None,
+            &Secret32::new([83; 32]),
+            &a.context(&routes, now + 6, &id(7)),
+        )
+        .unwrap();
+    let copy = packet(&sent, |p| p.own_copy.is_some());
+    let withdrawn = phone
+        .cancel_sending(&id(7), &a.context(&routes, now + 7, &id(8)))
+        .unwrap();
+    assert!(
+        withdrawn.iter().any(|action| matches!(action, Action::SendNostr { recipient, packet, .. } if packet.retract.is_some() && recipient.id() == b.card.id())),
+        "Igor still gets the retract"
+    );
+    let own = packet(&withdrawn, |p| p.own_retract.is_some());
+    laptop
+        .receive(
+            copy.clone(),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 8, &id(9)),
+        )
+        .unwrap();
+    assert!(laptop
+        .outbox
+        .messages
+        .iter()
+        .any(|m| m.envelope.id == id(7)));
+    laptop
+        .receive(
+            own.clone(),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 9, &id(10)),
+        )
+        .unwrap();
+    assert!(laptop
+        .outbox
+        .messages
+        .iter()
+        .all(|m| m.envelope.id != id(7)));
+
+    // The retract can outrun the copy: the copy then stays away.
+    let mut tablet = accepted(&a, &b);
+    for (p, n) in [(own, 11), (copy, 12)] {
+        tablet
+            .receive(
+                p,
+                Source::Nostr(&a.card.nostr_key),
+                &a.context(&routes, now + 10, &id(n)),
+            )
+            .unwrap();
+    }
+    assert!(tablet.outbox.messages.is_empty());
+}

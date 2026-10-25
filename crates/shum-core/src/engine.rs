@@ -313,12 +313,19 @@ impl Engine {
             return Ok(vec![]);
         }
         // Only this profile's own Nostr key sends these, from its other devices.
-        if packet.own_copy.is_some() || packet.own_read.is_some() {
+        if packet.own_copy.is_some()
+            || packet.own_read.is_some()
+            || packet.own_reaction.is_some()
+            || packet.own_retract.is_some()
+        {
             if !matches!(&source, Source::Nostr(key) if *key == self.inbox.own.nostr_key) {
                 return Ok(vec![]);
             }
             if let Some(copy) = packet.own_copy {
-                if copy.validate(&self.inbox.own, c.now).is_ok() {
+                // Withdrawn there before the copy reached this device.
+                if copy.validate(&self.inbox.own, c.now).is_ok()
+                    && !self.inbox.deleted.contains_key(&copy.envelope.id)
+                {
                     let recipient = copy.envelope.recipient.clone();
                     if !self.inbox.contacts.contains_key(&recipient.id()) {
                         let _ = self.add_contact(recipient);
@@ -332,6 +339,49 @@ impl Engine {
                         message.unread = false;
                         message.read = true;
                     }
+                }
+            }
+            if let Some(r) = packet
+                .own_reaction
+                .filter(|r| validate_own(r, &self.inbox.own, c.now).is_ok())
+            {
+                let id = &r.fields.message_id;
+                let peer = r.recipient.id();
+                let known = self
+                    .outbox
+                    .messages
+                    .iter()
+                    .any(|m| m.envelope.id == *id && m.envelope.recipient.id() == peer)
+                    || self
+                        .inbox
+                        .messages
+                        .iter()
+                        .any(|m| m.envelope.id == *id && m.envelope.sender.id() == peer);
+                if known {
+                    let key = (id.clone(), self.inbox.own.id());
+                    if let Some(mark) = self.inbox.reactions.get_mut(&key) {
+                        mark.apply(&r);
+                    } else {
+                        self.inbox
+                            .reactions
+                            .insert(key, ReactionMark::from_control(&r));
+                    }
+                }
+            }
+            if let Some(r) = packet
+                .own_retract
+                .filter(|r| validate_own(r, &self.inbox.own, c.now).is_ok())
+            {
+                let id = r.fields.message_id.clone();
+                if self
+                    .outbox
+                    .messages
+                    .iter()
+                    .find(|m| m.envelope.id == id)
+                    .is_none_or(|m| m.envelope.recipient.id() == r.recipient.id())
+                {
+                    self.inbox.deleted.insert(id.clone(), r.expires_at);
+                    self.forget_outgoing(&id);
                 }
             }
             return Ok(vec![]);
@@ -701,6 +751,8 @@ fn packet_parties(packet: &Packet) -> HashSet<String> {
     parties!(presence);
     parties!(retract);
     parties!(reaction);
+    parties!(own_reaction);
+    parties!(own_retract);
     if let Some(s) = &packet.profile_sync {
         ids.insert(s.sender.id());
     }
@@ -708,6 +760,18 @@ fn packet_parties(packet: &Packet) -> HashSet<String> {
 }
 
 impl Engine {
+    /// Drops a withdrawn outgoing message with its reactions.
+    fn forget_outgoing(&mut self, message_id: &str) {
+        self.outbox.messages.retain(|m| m.envelope.id != message_id);
+        self.inbox.reactions.retain(|(id, _), _| id != message_id);
+        self.outbox.controls.retain(|q| {
+            [q.packet.reaction.as_ref(), q.packet.own_reaction.as_ref()]
+                .into_iter()
+                .flatten()
+                .all(|r| r.fields.message_id != message_id)
+        });
+        self.held_reactions.remove(message_id);
+    }
     fn ephemeral(
         &self,
         peer: Card,
@@ -877,6 +941,18 @@ impl Engine {
         self.inbox
             .reactions
             .insert(mark_key, ReactionMark::from_control(&control));
+        // This profile's other devices show it too.
+        self.outbox.enqueue_control(QueuedControl {
+            id: format!("own-reaction:{}", control.id),
+            recipient: self.inbox.own.clone(),
+            expires: control.expires_at,
+            packet: Packet {
+                own_reaction: Some(control.clone()),
+                ..Packet::default()
+            },
+            kind: ControlKind::OwnReaction,
+            retry: Retry::default(),
+        });
         self.outbox.enqueue_control(QueuedControl {
             id: control.id.clone(),
             recipient: peer.clone(),
@@ -917,7 +993,9 @@ impl Engine {
             || message.delivery.nostr_accepted
             || message.delivery.last_nostr_attempt.is_some()
             || !message.offered.is_empty();
-        if left {
+        // This profile's other devices hold it too.
+        let shared = message.mirror || message.copied || message.copy_offered.is_some();
+        if left || shared {
             let control = Control {
                 version: 1,
                 id: c.uuid.into(),
@@ -931,27 +1009,34 @@ impl Engine {
                 },
             }
             .sign(c.keys.signing)?;
-            self.outbox.enqueue_control(QueuedControl {
-                id: control.id.clone(),
-                recipient: control.recipient.clone(),
-                expires: control.expires_at,
-                packet: Packet {
-                    retract: Some(control),
-                    ..Packet::default()
-                },
-                kind: ControlKind::Retract,
-                retry: Retry::default(),
-            });
+            if shared {
+                self.outbox.enqueue_control(QueuedControl {
+                    id: format!("own-retract:{}", control.id),
+                    recipient: self.inbox.own.clone(),
+                    expires: control.expires_at,
+                    packet: Packet {
+                        own_retract: Some(control.clone()),
+                        ..Packet::default()
+                    },
+                    kind: ControlKind::OwnRetract,
+                    retry: Retry::default(),
+                });
+            }
+            if left {
+                self.outbox.enqueue_control(QueuedControl {
+                    id: control.id.clone(),
+                    recipient: control.recipient.clone(),
+                    expires: control.expires_at,
+                    packet: Packet {
+                        retract: Some(control),
+                        ..Packet::default()
+                    },
+                    kind: ControlKind::Retract,
+                    retry: Retry::default(),
+                });
+            }
         }
-        self.outbox.messages.retain(|m| m.envelope.id != message_id);
-        self.inbox.reactions.retain(|(id, _), _| id != message_id);
-        self.outbox.controls.retain(|q| {
-            q.packet
-                .reaction
-                .as_ref()
-                .is_none_or(|r| r.fields.message_id != message_id)
-        });
-        self.held_reactions.remove(message_id);
+        self.forget_outgoing(message_id);
         Ok(self.tick(c.routes, c.now))
     }
     /// Sends an expired message again at the end of the chat and removes the

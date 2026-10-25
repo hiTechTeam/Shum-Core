@@ -364,6 +364,14 @@ pub struct InvitationAvatar {
     #[serde(with = "canonical::bytes")]
     pub signature: Vec<u8>,
 }
+/// Checks a reaction or retract this profile sent from another of its
+/// devices: signed by this profile, for one of its contacts.
+pub fn validate_own<T: ControlFields>(control: &Control<T>, own: &Card, now: i64) -> Result<()> {
+    if control.sender.id() != own.id() || control.sender.signing_key != own.signing_key {
+        return Err(Error::Invalid("own control sender"));
+    }
+    control.validate(now)
+}
 /// A message this profile sent from another of its devices: the envelope
 /// the contact got, and its text, which the envelope hides from everyone but
 /// the contact. It travels only to the profile's own Nostr key.
@@ -434,6 +442,10 @@ pub struct Packet {
     pub own_copy: Option<OwnCopy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own_read: Option<OwnRead>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_reaction: Option<Reaction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_retract: Option<Retract>,
 }
 impl Packet {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
@@ -453,6 +465,8 @@ impl Packet {
             packet.reaction.is_some(),
             packet.own_copy.is_some(),
             packet.own_read.is_some(),
+            packet.own_reaction.is_some(),
+            packet.own_retract.is_some(),
         ]
         .into_iter()
         .filter(|v| *v)
@@ -598,6 +612,8 @@ impl Default for Packet {
             reaction: None,
             own_copy: None,
             own_read: None,
+            own_reaction: None,
+            own_retract: None,
         }
     }
 }
