@@ -714,3 +714,122 @@ fn a_profile_on_two_devices_shares_reactions_and_withdrawals() {
     }
     assert!(tablet.outbox.messages.is_empty());
 }
+
+/// One profile on two devices: clearing a chat on one clears it on the
+/// other, while what came after the clear stays. Only the profile's own key
+/// can clear its chats.
+#[test]
+fn a_profile_on_two_devices_shares_cleared_chats() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = accepted(&a, &b);
+    let mut laptop = accepted(&a, &b);
+    let mut igor = accepted(&b, &a);
+
+    let before = igor
+        .send(
+            &a.card.id(),
+            "до очистки",
+            None,
+            &Secret32::new([84; 32]),
+            &b.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    let old = packet(&before, |p| p.envelope.is_some());
+    for device in [&mut phone, &mut laptop] {
+        device
+            .receive(
+                old.clone(),
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 1, &id(2)),
+            )
+            .unwrap();
+    }
+    let sent = phone
+        .send(
+            &b.card.id(),
+            "тоже до очистки",
+            None,
+            &Secret32::new([85; 32]),
+            &a.context(&routes, now + 2, &id(3)),
+        )
+        .unwrap();
+    laptop
+        .receive(
+            packet(&sent, |p| p.own_copy.is_some()),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 3, &id(4)),
+        )
+        .unwrap();
+    phone
+        .toggle_reaction(
+            &id(1),
+            ReactionKind::Fire,
+            &a.context(&routes, now + 4, &id(5)),
+        )
+        .unwrap();
+
+    phone.clear_chat(&b.card.id(), now + 10);
+    assert!(phone.inbox.messages.is_empty() && phone.outbox.messages.is_empty());
+    let clear = packet(&phone.tick(&routes, now + 11), |p| p.own_clear.is_some());
+
+    // A message written after the clear reaches the laptop first.
+    let after = igor
+        .send(
+            &a.card.id(),
+            "после очистки",
+            None,
+            &Secret32::new([86; 32]),
+            &b.context(&routes, now + 20, &id(6)),
+        )
+        .unwrap();
+    laptop
+        .receive(
+            packet(&after, |p| p.envelope.is_some()),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 21, &id(7)),
+        )
+        .unwrap();
+
+    // Another key cannot clear the profile's chats.
+    laptop
+        .receive(
+            clear.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 22, &id(8)),
+        )
+        .unwrap();
+    assert_eq!(laptop.inbox.messages.len(), 2);
+
+    laptop
+        .receive(
+            clear,
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 22, &id(8)),
+        )
+        .unwrap();
+    assert!(laptop.outbox.messages.is_empty());
+    let left: Vec<_> = laptop
+        .inbox
+        .messages
+        .iter()
+        .map(|m| m.envelope.id.clone())
+        .collect();
+    assert_eq!(left, vec![id(6)], "what came after the clear stays");
+    assert!(laptop.inbox.reactions.keys().all(|(m, _)| *m != id(1)));
+
+    // The old message does not come back from a relay.
+    laptop
+        .receive(
+            old,
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 23, &id(9)),
+        )
+        .unwrap();
+    assert_eq!(laptop.inbox.messages.len(), 1);
+}

@@ -369,10 +369,16 @@ impl Inbox {
         Ok(())
     }
     pub fn clear_chat(&mut self, contact: &str, now: i64) {
+        self.clear_until(contact, i64::MAX, now);
+    }
+    /// Clears a chat up to `before`; what came later stays.
+    pub fn clear_until(&mut self, contact: &str, before: i64, now: i64) {
         let conversation = conversation_id(&self.own.id(), contact);
+        let cleared = |m: &ReceivedMessage| {
+            m.envelope.conversation_id == conversation && m.envelope.timestamp <= before
+        };
         for message in &self.messages {
-            if message.envelope.conversation_id == conversation && message.envelope.expires_at > now
-            {
+            if cleared(message) && message.envelope.expires_at > now {
                 self.deleted
                     .insert(message.envelope.id.clone(), message.envelope.expires_at);
             }
@@ -380,11 +386,10 @@ impl Inbox {
         let ids: HashSet<_> = self
             .messages
             .iter()
-            .filter(|m| m.envelope.conversation_id == conversation)
+            .filter(|m| cleared(m))
             .map(|m| m.envelope.id.clone())
             .collect();
-        self.messages
-            .retain(|m| m.envelope.conversation_id != conversation);
+        self.messages.retain(|m| !cleared(m));
         self.reactions.retain(|(id, _), _| !ids.contains(id));
     }
     pub fn receive(

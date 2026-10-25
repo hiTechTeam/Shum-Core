@@ -412,6 +412,29 @@ impl OwnRead {
         Ok(())
     }
 }
+/// A chat this profile cleared on another of its devices: everything in it
+/// up to `before`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnClear {
+    #[serde(rename = "contactID")]
+    pub contact_id: String,
+    pub before: i64,
+}
+impl OwnClear {
+    pub fn validate(&self) -> Result<()> {
+        if self.contact_id.len() != 64
+            || !self
+                .contact_id
+                .bytes()
+                .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+            || self.before <= 0
+        {
+            return Err(Error::Invalid("own clear"));
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Packet {
@@ -446,6 +469,8 @@ pub struct Packet {
     pub own_reaction: Option<Reaction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own_retract: Option<Retract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_clear: Option<OwnClear>,
 }
 impl Packet {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
@@ -467,6 +492,7 @@ impl Packet {
             packet.own_read.is_some(),
             packet.own_reaction.is_some(),
             packet.own_retract.is_some(),
+            packet.own_clear.is_some(),
         ]
         .into_iter()
         .filter(|v| *v)
@@ -614,6 +640,7 @@ impl Default for Packet {
             own_read: None,
             own_reaction: None,
             own_retract: None,
+            own_clear: None,
         }
     }
 }

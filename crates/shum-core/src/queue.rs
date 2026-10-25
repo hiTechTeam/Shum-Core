@@ -150,11 +150,16 @@ pub enum ControlKind {
     OwnReaction,
     /// Messages withdrawn here, for this profile's other devices.
     OwnRetract,
+    /// Chats cleared here, for this profile's other devices.
+    OwnClear,
 }
 impl ControlKind {
     /// Goes only to this profile's own Nostr key, never over Bluetooth.
     pub fn own(self) -> bool {
-        matches!(self, Self::OwnRead | Self::OwnReaction | Self::OwnRetract)
+        matches!(
+            self,
+            Self::OwnRead | Self::OwnReaction | Self::OwnRetract | Self::OwnClear
+        )
     }
 }
 #[derive(Clone, Debug)]
@@ -280,9 +285,10 @@ impl Outbox {
                 .as_ref()
                 .zip(control.packet.own_reaction.as_ref())
                 .is_none_or(|(old, new)| old.fields.message_id != new.fields.message_id),
-            ControlKind::Retract | ControlKind::OwnRead | ControlKind::OwnRetract => {
-                c.id != control.id
-            }
+            ControlKind::Retract
+            | ControlKind::OwnRead
+            | ControlKind::OwnRetract
+            | ControlKind::OwnClear => c.id != control.id,
         });
         self.controls.push(control);
     }
@@ -540,6 +546,7 @@ impl Outbox {
             ControlKind::OwnRead,
             ControlKind::OwnReaction,
             ControlKind::OwnRetract,
+            ControlKind::OwnClear,
         ] {
             // Requests and replies share the invitation pass of four.
             for c in self
@@ -757,12 +764,18 @@ impl Outbox {
         self.receipts
             .retain(|r| r.receipt.sender.id() != id && r.receipt.destination.id() != id);
     }
-    pub fn clear_chat(&mut self, id: &str) {
-        self.messages.retain(|m| m.envelope.recipient.id() != id);
-        self.controls
-            .retain(|c| c.kind != ControlKind::Reaction || c.recipient.id() != id);
+    /// Drops the cleared messages of a chat and what is still owed for them.
+    pub fn clear_chat(&mut self, cleared: &HashSet<String>) {
+        self.messages.retain(|m| !cleared.contains(&m.envelope.id));
+        self.controls.retain(|c| {
+            c.kind != ControlKind::Reaction
+                || c.packet
+                    .reaction
+                    .as_ref()
+                    .is_none_or(|r| !cleared.contains(&r.fields.message_id))
+        });
         self.receipts
-            .retain(|r| r.receipt.sender.id() != id && r.receipt.destination.id() != id);
+            .retain(|r| !cleared.contains(&r.receipt.envelope_id));
     }
 }
 fn proof(receipt: &Receipt, envelope: &Envelope) -> bool {

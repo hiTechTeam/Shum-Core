@@ -317,6 +317,7 @@ impl Engine {
             || packet.own_read.is_some()
             || packet.own_reaction.is_some()
             || packet.own_retract.is_some()
+            || packet.own_clear.is_some()
         {
             if !matches!(&source, Source::Nostr(key) if *key == self.inbox.own.nostr_key) {
                 return Ok(vec![]);
@@ -383,6 +384,9 @@ impl Engine {
                     self.inbox.deleted.insert(id.clone(), r.expires_at);
                     self.forget_outgoing(&id);
                 }
+            }
+            if let Some(clear) = packet.own_clear.filter(|v| v.validate().is_ok()) {
+                self.clear_until(&clear.contact_id, clear.before, c.now);
             }
             return Ok(vec![]);
         }
@@ -567,27 +571,39 @@ impl Engine {
         Ok(self.tick(c.routes, c.now))
     }
     pub fn clear_chat(&mut self, id: &str, now: i64) {
-        let own_ids: HashSet<_> = self
+        let conversation = conversation_id(&self.inbox.own.id(), id);
+        let newest = self
             .outbox
             .messages
             .iter()
             .filter(|m| m.envelope.recipient.id() == id)
-            .map(|m| m.envelope.id.clone())
-            .collect();
-        self.inbox
-            .reactions
-            .retain(|(message, _), _| !own_ids.contains(message));
-        self.held_reactions
-            .retain(|_, (recipient, _, _)| recipient != id);
-        for m in &self.outbox.messages {
-            if m.envelope.recipient.id() == id && m.envelope.expires_at > now {
+            .map(|m| m.envelope.timestamp)
+            .chain(
                 self.inbox
-                    .deleted
-                    .insert(m.envelope.id.clone(), m.envelope.expires_at);
-            }
-        }
-        self.inbox.clear_chat(id, now);
-        self.outbox.clear_chat(id);
+                    .messages
+                    .iter()
+                    .filter(|m| m.envelope.conversation_id == conversation)
+                    .map(|m| m.envelope.timestamp),
+            )
+            .max()
+            .unwrap_or(0);
+        let before = now.max(newest);
+        self.clear_until(id, before, now);
+        // This profile's other devices clear it too.
+        self.outbox.enqueue_control(QueuedControl {
+            id: format!("own-clear:{id}:{before}"),
+            recipient: self.inbox.own.clone(),
+            expires: now.saturating_add(DAY_MS),
+            packet: Packet {
+                own_clear: Some(OwnClear {
+                    contact_id: id.into(),
+                    before,
+                }),
+                ..Packet::default()
+            },
+            kind: ControlKind::OwnClear,
+            retry: Retry::default(),
+        });
     }
     pub fn block(&mut self, id: &str, blocked: bool) -> Result<()> {
         self.live()?;
@@ -760,6 +776,37 @@ fn packet_parties(packet: &Packet) -> HashSet<String> {
 }
 
 impl Engine {
+    /// Clears a chat up to `before`; what came later stays.
+    fn clear_until(&mut self, id: &str, before: i64, now: i64) {
+        let conversation = conversation_id(&self.inbox.own.id(), id);
+        let mut cleared = HashSet::new();
+        for m in &self.outbox.messages {
+            if m.envelope.recipient.id() == id && m.envelope.timestamp <= before {
+                cleared.insert(m.envelope.id.clone());
+                if m.envelope.expires_at > now {
+                    self.inbox
+                        .deleted
+                        .insert(m.envelope.id.clone(), m.envelope.expires_at);
+                }
+            }
+        }
+        cleared.extend(
+            self.inbox
+                .messages
+                .iter()
+                .filter(|m| {
+                    m.envelope.conversation_id == conversation && m.envelope.timestamp <= before
+                })
+                .map(|m| m.envelope.id.clone()),
+        );
+        self.inbox
+            .reactions
+            .retain(|(message, _), _| !cleared.contains(message));
+        self.held_reactions
+            .retain(|message, _| !cleared.contains(message));
+        self.inbox.clear_until(id, before, now);
+        self.outbox.clear_chat(&cleared);
+    }
     /// Drops a withdrawn outgoing message with its reactions.
     fn forget_outgoing(&mut self, message_id: &str) {
         self.outbox.messages.retain(|m| m.envelope.id != message_id);
