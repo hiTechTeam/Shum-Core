@@ -169,6 +169,16 @@ fn a_lookup_by_network_id_answers_later() {
 }
 
 #[test]
+fn a_profile_cannot_add_its_own_card() {
+    let mut anya = profile("Аня");
+    let link = anya.engine.inbox.own.invitation().unwrap();
+    let request: Request = serde_json::from_value(json!({"command":"add","link":link})).unwrap();
+    let failure = anya.request(1, request).unwrap().unwrap_err();
+    assert_eq!(failure, shum_session::Failure::text("Это ваш профиль"));
+    assert!(anya.engine.inbox.contacts.is_empty());
+}
+
+#[test]
 fn stop_and_errors_come_back_as_requests_answers() {
     let mut anya = profile("Аня");
     let request: Request =

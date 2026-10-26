@@ -488,6 +488,9 @@ impl<H: Host> Machine<H> {
             Request::Add { link } => match invitation::parse(&link)? {
                 Invitation::Card(card) => {
                     let id = card.id();
+                    if id == self.engine.inbox.own.id() {
+                        return Err(text("Это ваш профиль"));
+                    }
                     self.apply(|e, _| {
                         e.add_contact(*card)?;
                         Ok(vec![])
