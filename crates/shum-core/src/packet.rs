@@ -471,6 +471,8 @@ pub struct Packet {
     pub own_retract: Option<Retract>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own_clear: Option<OwnClear>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_invitation: Option<InvitationControl>,
 }
 impl Packet {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
@@ -493,6 +495,7 @@ impl Packet {
             packet.own_reaction.is_some(),
             packet.own_retract.is_some(),
             packet.own_clear.is_some(),
+            packet.own_invitation.is_some(),
         ]
         .into_iter()
         .filter(|v| *v)
@@ -641,6 +644,7 @@ impl Default for Packet {
             own_reaction: None,
             own_retract: None,
             own_clear: None,
+            own_invitation: None,
         }
     }
 }

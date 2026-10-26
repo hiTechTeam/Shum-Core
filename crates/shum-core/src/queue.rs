@@ -152,13 +152,19 @@ pub enum ControlKind {
     OwnRetract,
     /// Chats cleared here, for this profile's other devices.
     OwnClear,
+    /// Invitations sent and answered here, for this profile's other devices.
+    OwnInvitation,
 }
 impl ControlKind {
     /// Goes only to this profile's own Nostr key, never over Bluetooth.
     pub fn own(self) -> bool {
         matches!(
             self,
-            Self::OwnRead | Self::OwnReaction | Self::OwnRetract | Self::OwnClear
+            Self::OwnRead
+                | Self::OwnReaction
+                | Self::OwnRetract
+                | Self::OwnClear
+                | Self::OwnInvitation
         )
     }
 }
@@ -279,6 +285,12 @@ impl Outbox {
                 .as_ref()
                 .zip(control.packet.reaction.as_ref())
                 .is_none_or(|(old, new)| old.fields.message_id != new.fields.message_id),
+            ControlKind::OwnInvitation => c
+                .packet
+                .own_invitation
+                .as_ref()
+                .zip(control.packet.own_invitation.as_ref())
+                .is_none_or(|(old, new)| old.recipient.id() != new.recipient.id()),
             ControlKind::OwnReaction => c
                 .packet
                 .own_reaction
@@ -547,6 +559,7 @@ impl Outbox {
             ControlKind::OwnReaction,
             ControlKind::OwnRetract,
             ControlKind::OwnClear,
+            ControlKind::OwnInvitation,
         ] {
             // Requests and replies share the invitation pass of four.
             for c in self

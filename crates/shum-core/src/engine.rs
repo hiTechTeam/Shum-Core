@@ -92,7 +92,10 @@ impl Engine {
     pub fn add_contact(&mut self, card: Card) -> Result<()> {
         self.live()?;
         card.validate()?;
-        if card.id() == self.inbox.own.id() || self.inbox.blocked.contains(&card.id()) {
+        if card.id() == self.inbox.own.id() {
+            return Err(Error::Invalid("own profile"));
+        }
+        if self.inbox.blocked.contains(&card.id()) {
             return Err(Error::Invalid("contact"));
         }
         if let Some(old) = self.inbox.contacts.get(&card.id()) {
@@ -213,6 +216,18 @@ impl Engine {
             self.inbox.requests.remove(id);
             self.inbox.outgoing_requests.remove(id);
         }
+        // This profile's other devices follow it too.
+        self.outbox.enqueue_control(QueuedControl {
+            id: format!("own-invitation:{}", control.id),
+            recipient: self.inbox.own.clone(),
+            expires: control.expires_at,
+            packet: Packet {
+                own_invitation: Some(control.clone()),
+                ..Packet::default()
+            },
+            kind: ControlKind::OwnInvitation,
+            retry: Retry::default(),
+        });
         self.outbox.enqueue_control(QueuedControl {
             id: control.id.clone(),
             recipient: peer.clone(),
@@ -318,6 +333,7 @@ impl Engine {
             || packet.own_reaction.is_some()
             || packet.own_retract.is_some()
             || packet.own_clear.is_some()
+            || packet.own_invitation.is_some()
         {
             if !matches!(&source, Source::Nostr(key) if *key == self.inbox.own.nostr_key) {
                 return Ok(vec![]);
@@ -387,6 +403,12 @@ impl Engine {
             }
             if let Some(clear) = packet.own_clear.filter(|v| v.validate().is_ok()) {
                 self.clear_until(&clear.contact_id, clear.before, c.now);
+            }
+            if let Some(i) = packet
+                .own_invitation
+                .filter(|v| validate_own(v, &self.inbox.own, c.now).is_ok())
+            {
+                self.apply_own_invitation(i);
             }
             return Ok(vec![]);
         }
@@ -769,6 +791,7 @@ fn packet_parties(packet: &Packet) -> HashSet<String> {
     parties!(reaction);
     parties!(own_reaction);
     parties!(own_retract);
+    parties!(own_invitation);
     if let Some(s) = &packet.profile_sync {
         ids.insert(s.sender.id());
     }
@@ -806,6 +829,46 @@ impl Engine {
             .retain(|message, _| !cleared.contains(message));
         self.inbox.clear_until(id, before, now);
         self.outbox.clear_chat(&cleared);
+    }
+    /// An invitation sent or answered on another of this profile's devices:
+    /// this device takes the same step, unless it already took a newer one.
+    fn apply_own_invitation(&mut self, c: InvitationControl) {
+        let id = c.recipient.id();
+        if self
+            .inbox
+            .invitations
+            .get(&id)
+            .is_some_and(|s| !newer(c.timestamp, &c.id, s.updated_at, &s.event_id))
+            || self.add_contact(c.recipient.clone()).is_err()
+        {
+            return;
+        }
+        let phase = match c.fields.action {
+            InvitationAction::Request => Phase::OutgoingPending,
+            InvitationAction::Accept => Phase::Accepted,
+            InvitationAction::Decline => Phase::DeclinedLocally,
+        };
+        self.inbox.invitations.insert(
+            id.clone(),
+            InvitationState {
+                phase,
+                updated_at: c.timestamp,
+                event_id: c.id.clone(),
+            },
+        );
+        if c.fields.action == InvitationAction::Request {
+            self.inbox.outgoing_requests.insert(id.clone());
+        } else {
+            self.inbox.requests.remove(&id);
+            self.inbox.outgoing_requests.remove(&id);
+        }
+        // An older step queued here would contradict it.
+        self.outbox.controls.retain(|q| {
+            q.packet
+                .invitation
+                .as_ref()
+                .is_none_or(|v| v.recipient.id() != id || v.timestamp >= c.timestamp)
+        });
     }
     /// Drops a withdrawn outgoing message with its reactions.
     fn forget_outgoing(&mut self, message_id: &str) {

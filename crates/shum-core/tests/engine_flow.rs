@@ -833,3 +833,116 @@ fn a_profile_on_two_devices_shares_cleared_chats() {
         .unwrap();
     assert_eq!(laptop.inbox.messages.len(), 1);
 }
+
+/// One profile on two devices: an invitation accepted on one is accepted on
+/// the other, so the request no longer waits there and a late copy of it
+/// changes nothing. A profile cannot add itself.
+#[test]
+fn a_profile_on_two_devices_shares_invitation_answers() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = Engine::new(a.card.clone()).unwrap();
+    let mut laptop = Engine::new(a.card.clone()).unwrap();
+    let mut igor = Engine::new(b.card.clone()).unwrap();
+    igor.add_contact(a.card.clone()).unwrap();
+
+    let invite = igor
+        .invitation(
+            &a.card.id(),
+            InvitationAction::Request,
+            None,
+            &b.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    let request = packet(&invite, |p| p.invitation.is_some());
+    for device in [&mut phone, &mut laptop] {
+        device
+            .receive(
+                request.clone(),
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 1, &id(2)),
+            )
+            .unwrap();
+        assert_eq!(device.inbox.phase(&b.card.id()), Phase::IncomingPending);
+    }
+
+    let accepted = laptop
+        .invitation(
+            &b.card.id(),
+            InvitationAction::Accept,
+            None,
+            &a.context(&routes, now + 2, &id(3)),
+        )
+        .unwrap();
+    assert!(
+        accepted.iter().any(|action| matches!(action, Action::SendNostr { recipient, packet, .. } if packet.invitation.is_some() && recipient.id() == b.card.id())),
+        "Igor still gets the answer"
+    );
+    let own = packet(&accepted, |p| p.own_invitation.is_some());
+
+    // Another key cannot answer for the profile.
+    let mut fooled = Engine::new(a.card.clone()).unwrap();
+    fooled
+        .receive(
+            request.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 1, &id(2)),
+        )
+        .unwrap();
+    fooled
+        .receive(
+            own.clone(),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 3, &id(4)),
+        )
+        .unwrap();
+    assert_eq!(fooled.inbox.phase(&b.card.id()), Phase::IncomingPending);
+
+    phone
+        .receive(
+            own,
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 3, &id(4)),
+        )
+        .unwrap();
+    assert_eq!(phone.inbox.phase(&b.card.id()), Phase::Accepted);
+    assert!(phone.inbox.requests.is_empty());
+
+    // The request arriving again from a relay changes nothing, and the
+    // phone can no longer decline what the laptop accepted.
+    phone
+        .receive(
+            request,
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 4, &id(5)),
+        )
+        .unwrap();
+    assert_eq!(phone.inbox.phase(&b.card.id()), Phase::Accepted);
+    assert!(phone
+        .invitation(
+            &b.card.id(),
+            InvitationAction::Decline,
+            None,
+            &a.context(&routes, now + 5, &id(6)),
+        )
+        .is_err());
+
+    // A profile cannot add or invite itself.
+    assert!(matches!(
+        phone.add_contact(a.card.clone()),
+        Err(shum_core::Error::Invalid("own profile"))
+    ));
+    assert!(phone
+        .invitation(
+            &a.card.id(),
+            InvitationAction::Request,
+            None,
+            &a.context(&routes, now + 6, &id(7)),
+        )
+        .is_err());
+}
