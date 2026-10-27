@@ -441,3 +441,111 @@ fn the_side_without_rssi_learns_the_distance_from_a_signal_report() {
     // A reading outside -127..-1 is not reported.
     assert!(a.measured("wire", 0, 1600).unwrap().is_empty());
 }
+
+/// A, B and C in a line: A and C never connect, B carries everything between.
+fn line(effects: Vec<(char, Effect)>, nodes: &mut [&mut Mesh; 3]) -> Vec<(char, Effect)> {
+    let mut queue: VecDeque<_> = effects.into();
+    let mut received = vec![];
+    let mut count = 0;
+    while let Some((from, effect)) = queue.pop_front() {
+        count += 1;
+        assert!(count < 5000, "unexpected echo loop");
+        match effect {
+            Effect::Send { link, frames } => {
+                let to = link.chars().next().unwrap();
+                let index = (to as u8 - b'a') as usize;
+                let back = from.to_string();
+                for frame in frames {
+                    for effect in nodes[index].receive(&back, &frame, 1000).unwrap() {
+                        queue.push_back((to, effect));
+                    }
+                }
+            }
+            other => received.push((from, other)),
+        }
+    }
+    received
+}
+
+#[test]
+fn a_public_note_crosses_the_mesh_with_its_author_card() {
+    let (ac, an, asign) = identity(1);
+    let (bc, bn, bsign) = identity(11);
+    let (cc, cn, csign) = identity(21);
+    let mut a = Mesh::new(ac.clone(), an, asign, vec![], HashSet::new()).unwrap();
+    let mut b = Mesh::new(bc, bn, bsign, vec![], HashSet::new()).unwrap();
+    let mut c = Mesh::new(cc, cn, csign, vec![], HashSet::new()).unwrap();
+    let mut start = vec![];
+    start.extend(
+        a.connected("b".into(), 180, None, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|e| ('a', e)),
+    );
+    start.extend(
+        b.connected("a".into(), 180, None, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|e| ('b', e)),
+    );
+    start.extend(
+        b.connected("c".into(), 180, None, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|e| ('b', e)),
+    );
+    start.extend(
+        c.connected("b".into(), 180, None, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|e| ('c', e)),
+    );
+    line(start, &mut [&mut a, &mut b, &mut c]);
+
+    let sent = a
+        .broadcast("note-1".into(), "Всем привет!".into(), 1000)
+        .unwrap();
+    let got = line(
+        sent.into_iter().map(|e| ('a', e)).collect(),
+        &mut [&mut a, &mut b, &mut c],
+    );
+    let notes: Vec<_> = got
+        .iter()
+        .filter_map(|(at, e)| match e {
+            Effect::Public { note, timestamp } => Some((*at, note, *timestamp)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(notes.len(), 2, "B and C each read it once, A never");
+    for (at, note, timestamp) in notes {
+        assert!(at == 'b' || at == 'c');
+        assert_eq!(note.text, "Всем привет!");
+        assert_eq!(note.card, ac);
+        assert_eq!(timestamp, 1000);
+    }
+}
+
+#[test]
+fn a_public_note_signed_by_someone_else_is_refused() {
+    let (ac, _, _) = identity(1);
+    let (cc, cn, csign) = identity(21);
+    let (_, mn, msign) = identity(31);
+    let mut c = Mesh::new(cc, cn, csign, vec![], HashSet::new()).unwrap();
+    c.connected("m".into(), 512, None, 1000).unwrap();
+    // M sends A's card as its own note: the routing ID and signature are M's.
+    let note = shum_core::public::PublicNote::new("x".into(), "fake".into(), ac).unwrap();
+    let mut frame = Frame {
+        version: 1,
+        kind: shum_core::public::FRAME_KIND,
+        ttl: 7,
+        timestamp: 1000,
+        sender: wire::routing_id(&mn.noise_public()).to_vec(),
+        recipient: None,
+        route: None,
+        payload: note.encode().unwrap(),
+        signature: None,
+        is_rsr: false,
+    };
+    frame.signature = Some(msign.sign(&frame.signing_bytes().unwrap()).to_vec());
+    assert!(c.receive("m", &frame.encode(false).unwrap(), 1000).is_err());
+}

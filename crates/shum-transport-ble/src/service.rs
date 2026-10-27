@@ -2,7 +2,7 @@
 //! peripheral helper carry the radio, `mesh` decides everything else.
 use crate::{mesh, radio};
 use anyhow::{Context, Result};
-use shum_core::{card::Card, crypto::Secret32, packet::Packet};
+use shum_core::{card::Card, crypto::Secret32, packet::Packet, public::PublicNote};
 use std::{
     collections::HashSet,
     path::Path,
@@ -27,9 +27,14 @@ pub enum Update {
         role: &'static str,
         state: String,
     },
+    Public {
+        note: Box<PublicNote>,
+        timestamp: i64,
+    },
 }
 enum Command {
     Send(String, Box<Packet>),
+    Broadcast(String, String),
     Profile(Box<Card>, Vec<Card>, HashSet<String>),
 }
 pub struct Ble {
@@ -74,6 +79,7 @@ impl Ble {
                     },
                     Some(command)=requests.recv()=>match command {
                         Command::Send(id,packet)=>mesh.send(&id,&packet,now()).map(|e|vec![e]),
+                        Command::Broadcast(id,text)=>mesh.broadcast(id,text,now()),
                         Command::Profile(card,pins,blocked)=>mesh.update(*card,pins,blocked,now()),
                     },
                     _=tick.tick()=>mesh.tick(now()),
@@ -117,6 +123,9 @@ impl Ble {
                                     noise,
                                     packet,
                                 },
+                                mesh::Effect::Public { note, timestamp } => {
+                                    Update::Public { note, timestamp }
+                                }
                             };
                             if send.send(update).await.is_err() {
                                 return;
@@ -139,6 +148,12 @@ impl Ble {
     pub fn send(&self, routing: String, packet: Box<Packet>) -> Result<()> {
         self.commands
             .try_send(Command::Send(routing, packet))
+            .context("BLE outbound queue full")
+    }
+    /// Writes `text` as note `id` to everyone on the mesh.
+    pub fn broadcast(&self, id: String, text: String) -> Result<()> {
+        self.commands
+            .try_send(Command::Broadcast(id, text))
             .context("BLE outbound queue full")
     }
     pub fn profile(&self, card: Card, pins: Vec<Card>, blocked: HashSet<String>) -> Result<()> {

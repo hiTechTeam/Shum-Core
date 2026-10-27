@@ -7,6 +7,7 @@ use shum_core::{
     noise::{HandshakeXX, Role, Session},
     packet::Packet,
     profile::{Kind, Manifest, ProfilePacket},
+    public::{self, PublicNote},
     wire::{self, Announcement, Assemblies, AuthenticatedPeerState, Frame},
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,6 +29,12 @@ pub enum Effect {
         routing: String,
         noise: [u8; 32],
         packet: Box<Packet>,
+    },
+    /// A note in the open chat with everyone nearby, from anywhere in the
+    /// mesh; `timestamp` is when its author sent it.
+    Public {
+        note: Box<PublicNote>,
+        timestamp: i64,
     },
 }
 struct Link {
@@ -287,6 +294,18 @@ impl Mesh {
         let body = canonical::encode(packet)?;
         ensure!(body.len() <= 24_000, "Shum BLE packet too large");
         self.encrypted(routing, 0x41, body, now)
+    }
+    /// Writes to everyone nearby. Every device on the mesh relays the signed
+    /// broadcast until its TTL runs out.
+    pub fn broadcast(&mut self, id: String, text: String, now: i64) -> Result<Vec<Effect>> {
+        let note = PublicNote::new(id, text, self.own.clone())?;
+        let mut frame = self.frame(public::FRAME_KIND, note.encode()?, None, now);
+        frame.signature = Some(self.signing.sign(&frame.signing_bytes()?).to_vec());
+        Ok(self
+            .links
+            .keys()
+            .filter_map(|id| self.transmit(id, frame.clone()).ok())
+            .collect())
     }
     fn hello(&mut self, routing: &str, now: i64) -> Result<Effect> {
         let packet = Packet {
@@ -555,6 +574,14 @@ impl Mesh {
                     }
                     _ => {}
                 }
+            }
+            public::FRAME_KIND => {
+                let note = PublicNote::decode(&frame.payload)?;
+                ensure!(note.verify(&frame)?, "Invalid public note signature");
+                effects.push(Effect::Public {
+                    note: Box::new(note),
+                    timestamp: frame.timestamp as i64,
+                });
             }
             3 => {
                 if let Some(p) = self.peers.get(&routing) {

@@ -82,7 +82,7 @@ fn pass(
                 }
             }
             Effect::Reply { id, result } => replies.push((id, result.unwrap())),
-            Effect::Push { .. } | Effect::SendBle { .. } => {}
+            Effect::Push { .. } | Effect::SendBle { .. } | Effect::Broadcast { .. } => {}
         }
     }
     busy
@@ -349,4 +349,69 @@ fn people_nearby_become_encounters_that_can_be_pinned() {
         json!({"command":"delete_encounters","contact":card.id()}),
     );
     assert_eq!(anya.snapshot()["encounters"], json!([]));
+}
+
+#[test]
+fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
+    use shum_core::public::PublicNote;
+    use shum_session::machine::Nearby;
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let anya_card = anya.engine.inbox.own.clone();
+
+    let sent = ok(
+        &mut anya,
+        json!({"command":"broadcast","text":"Всем привет!"}),
+    );
+    let id = sent["id"].as_str().unwrap().to_owned();
+    let effects = anya.effects();
+    assert!(effects.iter().any(
+        |e| matches!(e, Effect::Broadcast { id: i, text } if *i == id && text == "Всем привет!")
+    ));
+    let own = &anya.snapshot()["publicChat"][0];
+    assert_eq!(own["text"], "Всем привет!");
+    assert_eq!(own["outgoing"], true);
+
+    // Борис blocked Аня, yet the open chat still shows her, once.
+    ok(
+        &mut boris,
+        json!({"command":"add","link":anya_card.invitation().unwrap()}),
+    );
+    ok(
+        &mut boris,
+        json!({"command":"block","contact":anya_card.id(),"blocked":true}),
+    );
+    let note = PublicNote::new(id.clone(), "Всем привет!".into(), anya_card.clone()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    for _ in 0..2 {
+        boris
+            .nearby(Nearby::Public {
+                note: Box::new(note.clone()),
+                timestamp: now,
+            })
+            .unwrap();
+    }
+    let chat = boris.snapshot()["publicChat"].clone();
+    assert_eq!(chat.as_array().unwrap().len(), 1);
+    assert_eq!(chat[0]["card"]["name"], "Аня");
+    assert_eq!(chat[0]["outgoing"], false);
+
+    // A flood from one author stops at 20 a minute.
+    for n in 0..30 {
+        let note = PublicNote::new(format!("flood-{n}"), "спам".into(), anya_card.clone()).unwrap();
+        boris
+            .nearby(Nearby::Public {
+                note: Box::new(note),
+                timestamp: now,
+            })
+            .unwrap();
+    }
+    assert_eq!(boris.snapshot()["publicChat"].as_array().unwrap().len(), 20);
+
+    // A day later the notes are gone.
+    let later = now + shum_session::public::RETENTION_MS + 1;
+    assert!(shum_session::public::notes(boris.host.state(), later).is_empty());
 }

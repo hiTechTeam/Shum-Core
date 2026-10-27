@@ -137,6 +137,13 @@ impl Session {
                         }
                     }
                 }
+                Effect::Broadcast { id, text } => {
+                    if let Some(ble) = &self.ble {
+                        if let Err(error) = ble.broadcast(id, text) {
+                            self.machine.bluetooth["error"] = json!(error.to_string());
+                        }
+                    }
+                }
                 Effect::Reply { id, result } => {
                     if let Some(reply) = self.replies.remove(&id) {
                         let _ = reply.send(result);
@@ -221,6 +228,7 @@ impl Session {
                 packet,
             },
             Update::State { role, state } => Nearby::State { role, state },
+            Update::Public { note, timestamp } => Nearby::Public { note, timestamp },
         })
     }
 

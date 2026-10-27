@@ -32,6 +32,8 @@ pub enum Output {
     },
     /// Send a packet to a nearby device.
     SendBle { peer: String, packet: Box<Packet> },
+    /// Write note `id` to everyone on the Bluetooth mesh.
+    Broadcast { id: String, text: String },
 }
 
 pub struct Driver<H: Host> {
@@ -178,6 +180,7 @@ impl<H: Host> Driver<H> {
                     Effect::SendBle { peer, packet } => {
                         self.out.push(Output::SendBle { peer, packet })
                     }
+                    Effect::Broadcast { id, text } => self.out.push(Output::Broadcast { id, text }),
                 }
             }
             if !busy {

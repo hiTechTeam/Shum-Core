@@ -72,6 +72,8 @@ pub enum Effect {
     },
     /// Send a packet to a nearby device over Bluetooth.
     SendBle { peer: String, packet: Box<Packet> },
+    /// Write note `id` to everyone on the Bluetooth mesh.
+    Broadcast { id: String, text: String },
     /// The answer to a request that waited, by its ID.
     Reply {
         id: u64,
@@ -93,6 +95,11 @@ pub enum Nearby {
         routing: String,
         noise: [u8; 32],
         packet: Box<Packet>,
+    },
+    /// A note in the open chat, from anywhere on the mesh.
+    Public {
+        note: Box<shum_core::public::PublicNote>,
+        timestamp: i64,
     },
     State {
         role: &'static str,
@@ -168,6 +175,8 @@ pub struct Machine<H: Host> {
     inflight: HashSet<String>,
     pushed: HashSet<String>,
     lookups: HashMap<String, Lookup>,
+    /// When each author's recent open-chat notes arrived, to drop floods.
+    public_rate: HashMap<String, Vec<i64>>,
     replied: HashMap<String, i64>,
     stopped: bool,
     last_error: Option<String>,
@@ -201,6 +210,7 @@ impl<H: Host> Machine<H> {
             inflight: HashSet::new(),
             pushed: HashSet::new(),
             lookups: HashMap::new(),
+            public_rate: HashMap::new(),
             replied: HashMap::new(),
             stopped: false,
             last_error: None,
@@ -446,7 +456,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
@@ -557,6 +567,24 @@ impl<H: Host> Machine<H> {
                 }
                 let ephemeral = secret()?;
                 self.apply(|e, c| e.send(&id, &text, reply, &ephemeral, c))?;
+            }
+            Request::Broadcast { text: note } => {
+                if shum_core::card::trim(&note).is_empty()
+                    || note.len() > shum_core::public::MAX_TEXT
+                {
+                    return Err(text("Сообщение пустое или слишком длинное"));
+                }
+                let id = uuid()?;
+                let own = self.engine.inbox.own.clone();
+                let time = now();
+                self.edit(|state| {
+                    crate::public::record(state, &own, &id, &note, time, true, time)
+                })?;
+                self.effects.push(Effect::Broadcast {
+                    id: id.clone(),
+                    text: note,
+                });
+                return Ok(json!({ "id": id }));
             }
             Request::Read { contact } => {
                 let id = self.contact(&contact)?;
@@ -993,6 +1021,29 @@ impl<H: Host> Machine<H> {
                         )
                     })?;
                 }
+            }
+            // Blocked people stay visible: the open chat is not a private one.
+            Nearby::Public { note, timestamp } => {
+                let author = note.card.id();
+                if crate::public::contains(self.host.state(), &author, &note.id) {
+                    return Ok(());
+                }
+                let time = now();
+                if self.public_rate.len() > 1000 {
+                    self.public_rate.clear();
+                }
+                let recent = self.public_rate.entry(author.clone()).or_default();
+                recent.retain(|t| time - *t < 60_000);
+                if recent.len() >= 20 {
+                    return Ok(());
+                }
+                recent.push(time);
+                // Another device of this profile wrote it.
+                let own = author == self.engine.inbox.own.id();
+                let at = timestamp.min(time);
+                self.edit(|state| {
+                    crate::public::record(state, &note.card, &note.id, &note.text, at, own, time)
+                })?;
             }
         }
         Ok(())

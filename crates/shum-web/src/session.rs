@@ -190,7 +190,7 @@ impl WebSession {
                     Err(e) => failed.push((event, e.to_string())),
                 },
                 // The browser has no Bluetooth.
-                Output::SendBle { .. } => {}
+                Output::SendBle { .. } | Output::Broadcast { .. } => {}
             }
         }
         for (event, e) in failed {

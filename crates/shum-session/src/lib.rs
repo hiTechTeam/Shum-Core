@@ -14,6 +14,7 @@ pub mod contact;
 pub mod directory;
 pub mod driver;
 pub mod machine;
+pub mod public;
 #[cfg(feature = "native")]
 pub mod registration;
 #[cfg(feature = "native")]
@@ -135,6 +136,10 @@ pub enum Request {
         /// The message this one answers, as the iOS app quotes it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<shum_core::packet::Reply>,
+    },
+    /// Writes to the open chat with everyone nearby over Bluetooth.
+    Broadcast {
+        text: String,
     },
     Read {
         contact: String,

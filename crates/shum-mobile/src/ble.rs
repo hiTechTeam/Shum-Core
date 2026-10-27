@@ -86,6 +86,7 @@ impl Ble {
                     noise,
                     packet,
                 },
+                Effect::Public { note, timestamp } => Nearby::Public { note, timestamp },
             };
             if let Err(error) = driver.machine.nearby(news) {
                 driver.machine.bluetooth["error"] = json!(error.to_string());
@@ -131,6 +132,22 @@ impl Ble {
         let effects = mesh.send(peer, packet, now as i64).map(|e| vec![e]);
         self.apply(driver, effects);
         true
+    }
+
+    /// Writes to everyone on the mesh. The open chat has no other route, so
+    /// without Bluetooth the note stays only here.
+    pub(crate) fn broadcast(
+        &mut self,
+        driver: &mut Driver<StoreHost>,
+        id: String,
+        text: String,
+        now: u64,
+    ) {
+        let Some(mesh) = self.mesh.as_mut() else {
+            return;
+        };
+        let effects = mesh.broadcast(id, text, now as i64);
+        self.apply(driver, effects);
     }
 
     pub(crate) fn take_frames(&mut self) -> Vec<Value> {
