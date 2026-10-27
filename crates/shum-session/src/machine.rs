@@ -100,9 +100,17 @@ pub enum Nearby {
     },
 }
 
+/// What a lookup does with the card it finds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Then {
+    Add,
+    Invite,
+    /// Only shows it, so the person can be checked before adding.
+    Show,
+}
 struct Lookup {
     key: String,
-    invite: bool,
+    then: Then,
     expires: i64,
     reply: u64,
 }
@@ -455,15 +463,34 @@ impl<H: Host> Machine<H> {
     ) -> Option<std::result::Result<Value, Failure>> {
         if let Request::Add { link } = &request {
             if let Ok(Invitation::Locator(key)) = invitation::parse(link) {
-                return self.start_lookup(key, id, false);
+                return self.start_lookup(key, id, Then::Add);
             }
         }
         if let Request::Invite { contact } = &request {
             if matches!(self.resolve_contact(contact), Ok(None))
                 && crate::contact::network_id(contact)
             {
-                return self.start_lookup(contact.clone(), id, true);
+                return self.start_lookup(contact.clone(), id, Then::Invite);
             }
+        }
+        if let Request::Find { contact } = &request {
+            let key = match invitation::parse(contact) {
+                Ok(Invitation::Card(card)) if card.id() == self.engine.inbox.own.id() => {
+                    return Some(Err(Failure::text("Это ваш профиль")));
+                }
+                Ok(Invitation::Card(card)) => {
+                    let id = card.id();
+                    return Some(Ok(json!({"card":card, "link":contact, "contactID":id})));
+                }
+                Ok(Invitation::Locator(key)) => key,
+                Err(_) if crate::contact::network_id(contact) => contact.clone(),
+                Err(_) => {
+                    return Some(Err(Failure::text(
+                        "Нужна ссылка Shum или сетевой ID из 64 символов",
+                    )))
+                }
+            };
+            return self.start_lookup(key, id, Then::Show);
         }
         let result = match &request {
             Request::Invite { contact } => self.invite_contact(contact, InvitationAction::Request),
@@ -499,7 +526,10 @@ impl<H: Host> Machine<H> {
                 }
                 Invitation::Locator(_) => bail!("Lookup requires asynchronous request"),
             },
-            Request::Invite { .. } | Request::Accept { .. } | Request::Decline { .. } => {
+            Request::Invite { .. }
+            | Request::Accept { .. }
+            | Request::Decline { .. }
+            | Request::Find { .. } => {
                 bail!("internal invitation dispatch")
             }
             Request::CancelInvitation { contact } => {
@@ -665,7 +695,7 @@ impl<H: Host> Machine<H> {
         &mut self,
         key: String,
         reply: u64,
-        invite: bool,
+        then: Then,
     ) -> Option<std::result::Result<Value, Failure>> {
         if self.lookups.len() >= 8 {
             return Some(Err(Failure::text("Слишком много поисков")));
@@ -691,7 +721,7 @@ impl<H: Host> Machine<H> {
                     id,
                     Lookup {
                         key,
-                        invite,
+                        then,
                         expires: now() + 20_000,
                         reply,
                     },
@@ -856,9 +886,19 @@ impl<H: Host> Machine<H> {
             return;
         };
         let contact_id = card.id();
+        if lookup.then == Then::Show {
+            let result = card
+                .invitation()
+                .map(|link| json!({"card":card, "link":link, "contactID":contact_id}));
+            self.effects.push(Effect::Reply {
+                id: lookup.reply,
+                result: result.map_err(|e| Failure::from_error(e.into())),
+            });
+            return;
+        }
         let result = self.apply(|e, c| {
             e.add_contact(card)?;
-            if lookup.invite {
+            if lookup.then == Then::Invite {
                 e.invitation(&contact_id, InvitationAction::Request, None, c)
             } else {
                 Ok(vec![])

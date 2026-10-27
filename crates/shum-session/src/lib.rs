@@ -111,6 +111,11 @@ pub enum Request {
     Add {
         link: String,
     },
+    /// Shows the card behind a link or network ID without adding it; a
+    /// network ID waits for the person to answer, like `invite`.
+    Find {
+        contact: String,
+    },
     Invite {
         contact: String,
     },

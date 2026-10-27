@@ -257,6 +257,42 @@ fn an_invitation_that_never_left_can_be_cancelled() {
 }
 
 #[test]
+fn find_shows_a_card_without_adding_it() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let boris_id = boris.host.keys.owner_id();
+    let request: Request =
+        serde_json::from_value(json!({"command":"find","contact":boris.inbox()})).unwrap();
+    assert!(anya.request(7, request).is_none(), "waits for Борис's card");
+    let replies = relay(&mut anya, &mut boris);
+    assert_eq!(replies.len(), 1);
+    let found = &replies[0].1;
+    assert_eq!(found["card"]["name"], "Борис");
+    assert_eq!(found["contactID"], boris_id);
+    assert!(
+        anya.engine.inbox.contacts.is_empty(),
+        "nothing is added yet"
+    );
+    assert!(boris.engine.inbox.requests.is_empty(), "nobody is invited");
+
+    // The returned link adds the same card, and a link is shown at once.
+    let link = found["link"].as_str().unwrap().to_owned();
+    let shown = ok(&mut anya, json!({"command":"find","contact":link}));
+    assert_eq!(shown["contactID"], boris_id);
+    assert_eq!(
+        ok(&mut anya, json!({"command":"add","link":link}))["contactID"],
+        boris_id
+    );
+
+    let own = anya.engine.inbox.own.invitation().unwrap();
+    let request: Request = serde_json::from_value(json!({"command":"find","contact":own})).unwrap();
+    assert_eq!(
+        anya.request(8, request).unwrap().unwrap_err(),
+        shum_session::Failure::text("Это ваш профиль")
+    );
+}
+
+#[test]
 fn a_profile_cannot_add_its_own_card() {
     let mut anya = profile("Аня");
     let link = anya.engine.inbox.own.invitation().unwrap();
