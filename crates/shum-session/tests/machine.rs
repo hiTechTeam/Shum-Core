@@ -514,3 +514,91 @@ fn the_open_chat_carries_quotes_reactions_and_withdrawals_for_a_day() {
         + 1;
     assert!(shum_session::public::notes(boris.host.state(), later).is_empty());
 }
+
+/// Another device of the same profile: same keys and card, its own state.
+fn twin(of: &Machine<Memory>) -> Machine<Memory> {
+    let k = &of.host.keys;
+    let keys = ProfileKeys {
+        noise: shum_core::crypto::Secret32::new(*k.noise.expose()),
+        signing: shum_core::crypto::Secret32::new(*k.signing.expose()),
+        nostr: shum_core::crypto::Secret32::new(*k.nostr.expose()),
+        storage: shum_core::crypto::Secret32::new(*k.storage.expose()),
+    };
+    let owner = keys.owner_id();
+    let mut state = empty_state(&owner);
+    state["ownProfileCard"] = serde_json::to_value(&of.engine.inbox.own).unwrap();
+    let (records, _) = Records::create(&owner, keys.storage_key(), &state).unwrap();
+    let mut machine = Machine::new(
+        Memory {
+            keys,
+            records,
+            commits: 0,
+        },
+        false,
+        Default::default(),
+    )
+    .unwrap();
+    machine.set_relays(vec!["wss://relay.example".into()]);
+    machine
+}
+
+/// Hands `from`'s open-chat copies to `to` through the relays and confirms
+/// them; returns how many went out.
+fn copy(from: &mut Machine<Memory>, to: &mut Machine<Memory>) -> usize {
+    let mut sent = 0;
+    for effect in from.effects() {
+        if let Effect::Publish {
+            operation: Some(operation),
+            event,
+        } = effect
+        {
+            if operation.starts_with("public-copy:") {
+                sent += 1;
+                to.incoming(event);
+                from.published(&operation, true);
+            }
+        }
+    }
+    sent
+}
+
+#[test]
+fn the_open_chat_reaches_the_profiles_other_devices_through_relays() {
+    let mut phone = profile("Аня");
+    let mut mac = twin(&phone);
+    let mut boris = profile("Борис");
+
+    // Written offline, the copy waits for relays and then leaves.
+    phone.set_relays(vec![]);
+    ok(
+        &mut phone,
+        json!({"command":"broadcast","text":"С телефона"}),
+    );
+    assert_eq!(copy(&mut phone, &mut mac), 0);
+    phone.set_relays(vec!["wss://relay.example".into()]);
+    phone.tick();
+    assert_eq!(copy(&mut phone, &mut mac), 1);
+    let chat = mac.snapshot()["publicChat"].clone();
+    assert_eq!(chat[0]["text"], "С телефона");
+    assert_eq!(chat[0]["outgoing"], true);
+    assert!(
+        phone.host.state()["publicCopies"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a copy a relay took no longer waits"
+    );
+
+    // What the phone heard over Bluetooth reaches the Mac too, once.
+    ok(
+        &mut boris,
+        json!({"command":"broadcast","text":"Привет от Бориса"}),
+    );
+    mesh(&mut boris, &mut phone);
+    assert_eq!(copy(&mut phone, &mut mac), 1);
+    let chat = mac.snapshot()["publicChat"].clone();
+    assert_eq!(chat[1]["text"], "Привет от Бориса");
+    assert_eq!(chat[1]["outgoing"], false);
+    // The Mac does not copy what it got from the phone back again.
+    assert_eq!(copy(&mut mac, &mut phone), 0);
+}

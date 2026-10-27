@@ -190,6 +190,56 @@ fn prune(chat: &mut Value, now: i64) {
     chat["authors"] = authors.into();
 }
 
+/// Prefix of the relay message that copies an open-chat event to this
+/// profile's other devices. Earlier versions ignore it.
+pub const COPY_PREFIX: &str = "shum-public-v1:";
+/// Relay operations of those copies start with this.
+pub const COPY_OPERATION: &str = "public-copy:";
+/// At most this many copies wait for a connection; the oldest go first.
+const MAX_COPIES: usize = 500;
+
+/// Queues `content` for this profile's other devices under `operation`.
+pub fn queue_copy(state: &mut Value, operation: &str, content: String) -> bool {
+    let mut copies = state["publicCopies"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    copies.push(json!({"operation": operation, "content": content}));
+    if copies.len() > MAX_COPIES {
+        copies.drain(..copies.len() - MAX_COPIES);
+    }
+    state["publicCopies"] = copies.into();
+    true
+}
+
+/// Copies still waiting for a relay, as (operation, content).
+pub fn copies(state: &Value) -> Vec<(String, String)> {
+    state["publicCopies"]
+        .as_array()
+        .map(|copies| {
+            copies
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        c["operation"].as_str()?.to_owned(),
+                        c["content"].as_str()?.to_owned(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A relay took the copy: it no longer waits.
+pub fn copied(state: &mut Value, operation: &str) -> bool {
+    let Some(copies) = state["publicCopies"].as_array_mut() else {
+        return false;
+    };
+    let before = copies.len();
+    copies.retain(|c| c["operation"] != operation);
+    copies.len() != before
+}
+
 /// The day's notes, oldest first, each with its author's card, its quote and
 /// everyone's reactions with their cards.
 pub fn notes(state: &Value, now: i64) -> Vec<Value> {

@@ -738,11 +738,51 @@ impl<H: Host> Machine<H> {
         let own = self.engine.inbox.own.clone();
         let time = now();
         self.edit(|state| crate::public::apply(state, &own, &id, &body, time, true, time))?;
+        let event = shum_core::public::PublicEvent::new(id.clone(), body.clone(), own)?;
+        self.copy_public(&event, time)?;
         self.effects.push(Effect::Broadcast {
             id: id.clone(),
             body,
         });
         Ok(id)
+    }
+
+    /// Queues an open-chat event for this profile's other devices, which
+    /// read it from the relays even when they are not nearby.
+    fn copy_public(
+        &mut self,
+        event: &shum_core::public::PublicEvent,
+        timestamp: i64,
+    ) -> Result<()> {
+        let body = shum_core::canonical::encode(&json!({"event": event, "timestamp": timestamp}))?;
+        let content = format!("{}{}", crate::public::COPY_PREFIX, STANDARD.encode(body));
+        let operation = format!("{}{}", crate::public::COPY_OPERATION, uuid()?);
+        self.edit(|state| crate::public::queue_copy(state, &operation, content))?;
+        self.send_public_copies();
+        Ok(())
+    }
+
+    /// Sends the waiting copies once there are relays to take them.
+    fn send_public_copies(&mut self) {
+        if self.relays.is_empty() {
+            return;
+        }
+        let own = self.engine.inbox.own.nostr_key.clone();
+        for (operation, content) in crate::public::copies(self.host.state()) {
+            if self.inflight.contains(&operation) {
+                continue;
+            }
+            match wrap(&self.host.keys().nostr, &own, content) {
+                Ok(event) => {
+                    self.inflight.insert(operation.clone());
+                    self.effects.push(Effect::Publish {
+                        operation: Some(operation),
+                        event,
+                    });
+                }
+                Err(error) => self.last_error = Some(error.to_string()),
+            }
+        }
     }
 
     fn edit(&mut self, change: impl FnOnce(&mut Value) -> bool) -> Result<()> {
@@ -820,6 +860,35 @@ impl<H: Host> Machine<H> {
                         if let Ok(packet) = Packet::decode(&bytes) {
                             self.apply(|e, c| {
                                 e.receive(packet, Source::Nostr(&message.sender), c)
+                            })?;
+                        }
+                    }
+                }
+            } else if let Some(encoded) = message.content.strip_prefix(crate::public::COPY_PREFIX) {
+                // Only this profile's own devices write copies; they are not copied on.
+                if message.sender == self.engine.inbox.own.nostr_key && encoded.len() <= 12000 {
+                    if let Some(value) = STANDARD
+                        .decode(encoded)
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    {
+                        let event = shum_core::canonical::encode(&value["event"])
+                            .ok()
+                            .and_then(|bytes| shum_core::public::PublicEvent::decode(&bytes).ok());
+                        if let (Some(event), Some(timestamp)) = (event, value["timestamp"].as_i64())
+                        {
+                            let own = event.card.id() == self.engine.inbox.own.id();
+                            let time = now();
+                            self.edit(|state| {
+                                crate::public::apply(
+                                    state,
+                                    &event.card,
+                                    &event.id,
+                                    &event.body,
+                                    timestamp.min(time),
+                                    own,
+                                    time,
+                                )
                             })?;
                         }
                     }
@@ -977,6 +1046,14 @@ impl<H: Host> Machine<H> {
     /// The relays answered a publication with an operation.
     pub fn published(&mut self, operation: &str, accepted: bool) {
         self.inflight.remove(operation);
+        if operation.starts_with(crate::public::COPY_OPERATION) {
+            if accepted {
+                if let Err(error) = self.edit(|state| crate::public::copied(state, operation)) {
+                    self.last_error = Some(error.to_string());
+                }
+            }
+            return;
+        }
         if let Err(error) = self.apply(|e, c| {
             e.outbox.relay_result(operation, accepted, c.now, false);
             Ok(vec![])
@@ -1077,9 +1154,22 @@ impl<H: Host> Machine<H> {
                 // Another device of this profile wrote it.
                 let own = author == self.engine.inbox.own.id();
                 let at = timestamp.min(time);
+                let mut changed = false;
                 self.edit(|state| {
-                    crate::public::apply(state, &event.card, &event.id, &event.body, at, own, time)
+                    changed = crate::public::apply(
+                        state,
+                        &event.card,
+                        &event.id,
+                        &event.body,
+                        at,
+                        own,
+                        time,
+                    );
+                    changed
                 })?;
+                if changed {
+                    self.copy_public(&event, at)?;
+                }
             }
         }
         Ok(())
@@ -1090,6 +1180,7 @@ impl<H: Host> Machine<H> {
         if let Err(error) = self.apply(|e, c| Ok(e.tick(c.routes, c.now))) {
             self.last_error = Some(error.to_string());
         }
+        self.send_public_copies();
         let expired: Vec<_> = self
             .lookups
             .iter()
