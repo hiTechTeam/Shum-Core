@@ -9,6 +9,7 @@ use crate::{now, phase, random, text, uuid, Failure, Request};
 use anyhow::{bail, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
+use shum_core::public::PublicBody;
 use shum_core::{
     canonical,
     card::Card,
@@ -72,8 +73,11 @@ pub enum Effect {
     },
     /// Send a packet to a nearby device over Bluetooth.
     SendBle { peer: String, packet: Box<Packet> },
-    /// Write note `id` to everyone on the Bluetooth mesh.
-    Broadcast { id: String, text: String },
+    /// Send event `id` to everyone on the Bluetooth mesh.
+    Broadcast {
+        id: String,
+        body: shum_core::public::PublicBody,
+    },
     /// The answer to a request that waited, by its ID.
     Reply {
         id: u64,
@@ -98,7 +102,7 @@ pub enum Nearby {
     },
     /// A note in the open chat, from anywhere on the mesh.
     Public {
-        note: Box<shum_core::public::PublicNote>,
+        event: Box<shum_core::public::PublicEvent>,
         timestamp: i64,
     },
     State {
@@ -568,23 +572,40 @@ impl<H: Host> Machine<H> {
                 let ephemeral = secret()?;
                 self.apply(|e, c| e.send(&id, &text, reply, &ephemeral, c))?;
             }
-            Request::Broadcast { text: note } => {
+            Request::Broadcast { text: note, reply } => {
                 if shum_core::card::trim(&note).is_empty()
                     || note.len() > shum_core::public::MAX_TEXT
                 {
                     return Err(text("Сообщение пустое или слишком длинное"));
                 }
-                let id = uuid()?;
-                let own = self.engine.inbox.own.clone();
-                let time = now();
-                self.edit(|state| {
-                    crate::public::record(state, &own, &id, &note, time, true, time)
-                })?;
-                self.effects.push(Effect::Broadcast {
-                    id: id.clone(),
-                    text: note,
+                // A quote carries only the start of what it answers.
+                let reply = reply.map(|mut r| {
+                    r.text = r.text.chars().take(200).collect();
+                    r
                 });
+                let id = self.public_event(PublicBody::Note { text: note, reply })?;
                 return Ok(json!({ "id": id }));
+            }
+            Request::PublicReaction {
+                note,
+                author,
+                reaction,
+            } => {
+                if !crate::public::contains(self.host.state(), &author, &note) {
+                    return Err(text("Сообщение уже недоступно"));
+                }
+                self.public_event(PublicBody::Reaction {
+                    note_id: note,
+                    author_id: author,
+                    reaction,
+                })?;
+            }
+            Request::PublicRetract { note } => {
+                let own = self.engine.inbox.own.id();
+                if !crate::public::contains(self.host.state(), &own, &note) {
+                    return Err(text("Сообщение уже недоступно"));
+                }
+                self.public_event(PublicBody::Retract { note_id: note })?;
             }
             Request::Read { contact } => {
                 let id = self.contact(&contact)?;
@@ -711,6 +732,19 @@ impl<H: Host> Machine<H> {
     }
 
     /// Changes profile state that the engine does not model, in one commit.
+    /// Applies an own event to the open chat and sends it to the mesh.
+    fn public_event(&mut self, body: PublicBody) -> Result<String> {
+        let id = uuid()?;
+        let own = self.engine.inbox.own.clone();
+        let time = now();
+        self.edit(|state| crate::public::apply(state, &own, &id, &body, time, true, time))?;
+        self.effects.push(Effect::Broadcast {
+            id: id.clone(),
+            body,
+        });
+        Ok(id)
+    }
+
     fn edit(&mut self, change: impl FnOnce(&mut Value) -> bool) -> Result<()> {
         let mut state = self.host.state().clone();
         if change(&mut state) {
@@ -1023,9 +1057,11 @@ impl<H: Host> Machine<H> {
                 }
             }
             // Blocked people stay visible: the open chat is not a private one.
-            Nearby::Public { note, timestamp } => {
-                let author = note.card.id();
-                if crate::public::contains(self.host.state(), &author, &note.id) {
+            Nearby::Public { event, timestamp } => {
+                let author = event.card.id();
+                if matches!(event.body, PublicBody::Note { .. })
+                    && crate::public::contains(self.host.state(), &author, &event.id)
+                {
                     return Ok(());
                 }
                 let time = now();
@@ -1042,7 +1078,7 @@ impl<H: Host> Machine<H> {
                 let own = author == self.engine.inbox.own.id();
                 let at = timestamp.min(time);
                 self.edit(|state| {
-                    crate::public::record(state, &note.card, &note.id, &note.text, at, own, time)
+                    crate::public::apply(state, &event.card, &event.id, &event.body, at, own, time)
                 })?;
             }
         }

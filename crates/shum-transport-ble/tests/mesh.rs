@@ -502,9 +502,11 @@ fn a_public_note_crosses_the_mesh_with_its_author_card() {
     );
     line(start, &mut [&mut a, &mut b, &mut c]);
 
-    let sent = a
-        .broadcast("note-1".into(), "Всем привет!".into(), 1000)
-        .unwrap();
+    let note = shum_core::public::PublicBody::Note {
+        text: "Всем привет!".into(),
+        reply: None,
+    };
+    let sent = a.broadcast("note-1".into(), note.clone(), 1000).unwrap();
     let got = line(
         sent.into_iter().map(|e| ('a', e)).collect(),
         &mut [&mut a, &mut b, &mut c],
@@ -512,15 +514,15 @@ fn a_public_note_crosses_the_mesh_with_its_author_card() {
     let notes: Vec<_> = got
         .iter()
         .filter_map(|(at, e)| match e {
-            Effect::Public { note, timestamp } => Some((*at, note, *timestamp)),
+            Effect::Public { event, timestamp } => Some((*at, event, *timestamp)),
             _ => None,
         })
         .collect();
     assert_eq!(notes.len(), 2, "B and C each read it once, A never");
-    for (at, note, timestamp) in notes {
+    for (at, event, timestamp) in notes {
         assert!(at == 'b' || at == 'c');
-        assert_eq!(note.text, "Всем привет!");
-        assert_eq!(note.card, ac);
+        assert_eq!(event.body, note);
+        assert_eq!(event.card, ac);
         assert_eq!(timestamp, 1000);
     }
 }
@@ -533,7 +535,15 @@ fn a_public_note_signed_by_someone_else_is_refused() {
     let mut c = Mesh::new(cc, cn, csign, vec![], HashSet::new()).unwrap();
     c.connected("m".into(), 512, None, 1000).unwrap();
     // M sends A's card as its own note: the routing ID and signature are M's.
-    let note = shum_core::public::PublicNote::new("x".into(), "fake".into(), ac).unwrap();
+    let note = shum_core::public::PublicEvent::new(
+        "x".into(),
+        shum_core::public::PublicBody::Note {
+            text: "fake".into(),
+            reply: None,
+        },
+        ac,
+    )
+    .unwrap();
     let mut frame = Frame {
         version: 1,
         kind: shum_core::public::FRAME_KIND,

@@ -351,26 +351,48 @@ fn people_nearby_become_encounters_that_can_be_pinned() {
     assert_eq!(anya.snapshot()["encounters"], json!([]));
 }
 
+/// Carries `from`'s open-chat events to `to`, as the mesh would.
+fn mesh(
+    from: &mut Machine<Memory>,
+    to: &mut Machine<Memory>,
+) -> Vec<shum_core::public::PublicEvent> {
+    let card = from.engine.inbox.own.clone();
+    let events: Vec<_> = from
+        .effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Broadcast { id, body } => {
+                Some(shum_core::public::PublicEvent::new(id, body, card.clone()).unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    for event in &events {
+        hear(to, event);
+    }
+    events
+}
+
+fn hear(to: &mut Machine<Memory>, event: &shum_core::public::PublicEvent) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    to.nearby(shum_session::machine::Nearby::Public {
+        event: Box::new(event.clone()),
+        timestamp: now,
+    })
+    .unwrap();
+}
+
 #[test]
-fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
-    use shum_core::public::PublicNote;
-    use shum_session::machine::Nearby;
+fn the_open_chat_carries_quotes_reactions_and_withdrawals_for_a_day() {
     let mut anya = profile("Аня");
     let mut boris = profile("Борис");
     let anya_card = anya.engine.inbox.own.clone();
-
-    let sent = ok(
-        &mut anya,
-        json!({"command":"broadcast","text":"Всем привет!"}),
-    );
-    let id = sent["id"].as_str().unwrap().to_owned();
-    let effects = anya.effects();
-    assert!(effects.iter().any(
-        |e| matches!(e, Effect::Broadcast { id: i, text } if *i == id && text == "Всем привет!")
-    ));
-    let own = &anya.snapshot()["publicChat"][0];
-    assert_eq!(own["text"], "Всем привет!");
-    assert_eq!(own["outgoing"], true);
+    let anya_id = anya_card.id();
+    let boris_id = boris.host.keys.owner_id();
+    let chat = |m: &Machine<Memory>| m.snapshot()["publicChat"].clone();
 
     // Борис blocked Аня, yet the open chat still shows her, once.
     ok(
@@ -379,46 +401,91 @@ fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
     );
     ok(
         &mut boris,
-        json!({"command":"block","contact":anya_card.id(),"blocked":true}),
+        json!({"command":"block","contact":anya_id,"blocked":true}),
     );
-    let note = PublicNote::new(id.clone(), "Всем привет!".into(), anya_card.clone()).unwrap();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let id = ok(
+        &mut anya,
+        json!({"command":"broadcast","text":"Всем привет!"}),
+    )["id"]
+        .as_str()
         .unwrap()
-        .as_millis() as i64;
-    for _ in 0..2 {
-        boris
-            .nearby(Nearby::Public {
-                note: Box::new(note.clone()),
-                timestamp: now,
-            })
-            .unwrap();
-    }
-    let chat = boris.snapshot()["publicChat"].clone();
-    assert_eq!(chat.as_array().unwrap().len(), 1);
-    assert_eq!(chat[0]["card"]["name"], "Аня");
-    assert_eq!(chat[0]["outgoing"], false);
+        .to_owned();
+    assert_eq!(chat(&anya)[0]["outgoing"], true);
+    let hello = mesh(&mut anya, &mut boris);
+    hear(&mut boris, &hello[0]);
+    assert_eq!(chat(&boris).as_array().unwrap().len(), 1);
+    assert_eq!(chat(&boris)[0]["card"]["name"], "Аня");
+    assert_eq!(chat(&boris)[0]["outgoing"], false);
+
+    // Борис answers with a quote and reacts; Аня sees both, then the
+    // reaction goes away when he takes it back.
+    ok(
+        &mut boris,
+        json!({"command":"broadcast","text":"И тебе!",
+            "reply":{"messageID":id,"senderID":anya_id,"text":"Всем привет!"}}),
+    );
+    ok(
+        &mut boris,
+        json!({"command":"public_reaction","note":id,"author":anya_id,"reaction":"heart"}),
+    );
+    mesh(&mut boris, &mut anya);
+    let notes = chat(&anya);
+    assert_eq!(notes[1]["reply"]["messageID"], id.as_str());
+    assert_eq!(notes[0]["reactions"][0]["personID"], boris_id.as_str());
+    assert_eq!(notes[0]["reactions"][0]["reaction"], "heart");
+    assert_eq!(notes[0]["reactions"][0]["card"]["name"], "Борис");
+    ok(
+        &mut boris,
+        json!({"command":"public_reaction","note":id,"author":anya_id}),
+    );
+    mesh(&mut boris, &mut anya);
+    assert!(chat(&anya)[0]["reactions"].as_array().unwrap().is_empty());
+
+    // Аня withdraws her note; a late copy does not bring it back.
+    ok(&mut anya, json!({"command":"public_retract","note":id}));
+    mesh(&mut anya, &mut boris);
+    hear(&mut boris, &hello[0]);
+    let left = chat(&boris);
+    assert!(left
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|n| n["id"] != id.as_str()));
+    assert_eq!(left.as_array().unwrap().len(), 1, "Борис's answer stays");
+    // Only the author can withdraw: Борис cannot take back Аня's notes.
+    assert!(boris
+        .request(
+            0,
+            serde_json::from_value(json!({"command":"public_retract","note":"nope"})).unwrap()
+        )
+        .unwrap()
+        .is_err());
 
     // A flood from one author stops at 20 a minute.
+    let mut vera = profile("Вера");
     for n in 0..30 {
-        let note = PublicNote::new(format!("flood-{n}"), "спам".into(), anya_card.clone()).unwrap();
-        boris
-            .nearby(Nearby::Public {
-                note: Box::new(note),
-                timestamp: now,
-            })
-            .unwrap();
+        ok(
+            &mut vera,
+            json!({"command":"broadcast","text":format!("спам {n}")}),
+        );
     }
-    assert_eq!(boris.snapshot()["publicChat"].as_array().unwrap().len(), 20);
+    mesh(&mut vera, &mut boris);
+    let from_vera = chat(&boris)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["card"]["name"] == "Вера")
+        .count();
+    assert_eq!(from_vera, 20);
 
     // Someone relayed by others is on the mesh without being nearby.
     ok(
         &mut boris,
-        json!({"command":"block","contact":anya_card.id(),"blocked":false}),
+        json!({"command":"block","contact":anya_id,"blocked":false}),
     );
     let noise = anya.host.keys.noise.noise_public();
     boris
-        .nearby(Nearby::Peer {
+        .nearby(shum_session::machine::Nearby::Peer {
             routing: hex::encode(shum_core::wire::routing_id(&noise)),
             card: Box::new(anya_card.clone()),
             noise,
@@ -430,7 +497,7 @@ fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["id"] == anya_card.id().as_str())
+        .find(|c| c["id"] == anya_id.as_str())
         .unwrap()
         .clone();
     assert_eq!(
@@ -439,6 +506,11 @@ fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
     );
 
     // A day later the notes are gone.
-    let later = now + shum_session::public::RETENTION_MS + 1;
+    let later = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        + shum_session::public::RETENTION_MS
+        + 1;
     assert!(shum_session::public::notes(boris.host.state(), later).is_empty());
 }

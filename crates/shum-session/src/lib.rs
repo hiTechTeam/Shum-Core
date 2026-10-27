@@ -140,6 +140,20 @@ pub enum Request {
     /// Writes to the open chat with everyone nearby over Bluetooth.
     Broadcast {
         text: String,
+        /// The note this one answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<shum_core::packet::Reply>,
+    },
+    /// Sets the own reaction on a note in the open chat; none takes it back.
+    PublicReaction {
+        note: String,
+        author: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reaction: Option<ReactionKind>,
+    },
+    /// Withdraws an own note from everyone in the open chat.
+    PublicRetract {
+        note: String,
     },
     Read {
         contact: String,

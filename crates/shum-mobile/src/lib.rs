@@ -369,7 +369,7 @@ impl MobileSession {
                         Err(error) => driver.machine.bluetooth["error"] = json!(error.to_string()),
                     }
                 }
-                Output::Broadcast { id, text } => ble.broadcast(&mut driver, id, text, now),
+                Output::Broadcast { id, body } => ble.broadcast(&mut driver, id, body, now),
             }
         }
         all.extend(ble.take_frames());

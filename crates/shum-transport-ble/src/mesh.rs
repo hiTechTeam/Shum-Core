@@ -7,7 +7,7 @@ use shum_core::{
     noise::{HandshakeXX, Role, Session},
     packet::Packet,
     profile::{Kind, Manifest, ProfilePacket},
-    public::{self, PublicNote},
+    public::{self, PublicBody, PublicEvent},
     wire::{self, Announcement, Assemblies, AuthenticatedPeerState, Frame},
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -30,10 +30,10 @@ pub enum Effect {
         noise: [u8; 32],
         packet: Box<Packet>,
     },
-    /// A note in the open chat with everyone nearby, from anywhere in the
-    /// mesh; `timestamp` is when its author sent it.
+    /// An event in the open chat with everyone nearby, from anywhere in the
+    /// mesh; `timestamp` is when its sender sent it.
     Public {
-        note: Box<PublicNote>,
+        event: Box<PublicEvent>,
         timestamp: i64,
     },
 }
@@ -297,9 +297,9 @@ impl Mesh {
     }
     /// Writes to everyone nearby. Every device on the mesh relays the signed
     /// broadcast until its TTL runs out.
-    pub fn broadcast(&mut self, id: String, text: String, now: i64) -> Result<Vec<Effect>> {
-        let note = PublicNote::new(id, text, self.own.clone())?;
-        let mut frame = self.frame(public::FRAME_KIND, note.encode()?, None, now);
+    pub fn broadcast(&mut self, id: String, body: PublicBody, now: i64) -> Result<Vec<Effect>> {
+        let event = PublicEvent::new(id, body, self.own.clone())?;
+        let mut frame = self.frame(public::FRAME_KIND, event.encode()?, None, now);
         frame.signature = Some(self.signing.sign(&frame.signing_bytes()?).to_vec());
         Ok(self
             .links
@@ -576,10 +576,10 @@ impl Mesh {
                 }
             }
             public::FRAME_KIND => {
-                let note = PublicNote::decode(&frame.payload)?;
-                ensure!(note.verify(&frame)?, "Invalid public note signature");
+                let event = PublicEvent::decode(&frame.payload)?;
+                ensure!(event.verify(&frame)?, "Invalid public event signature");
                 effects.push(Effect::Public {
-                    note: Box::new(note),
+                    event: Box::new(event),
                     timestamp: frame.timestamp as i64,
                 });
             }

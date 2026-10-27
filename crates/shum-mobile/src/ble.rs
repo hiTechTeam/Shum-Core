@@ -86,7 +86,7 @@ impl Ble {
                     noise,
                     packet,
                 },
-                Effect::Public { note, timestamp } => Nearby::Public { note, timestamp },
+                Effect::Public { event, timestamp } => Nearby::Public { event, timestamp },
             };
             if let Err(error) = driver.machine.nearby(news) {
                 driver.machine.bluetooth["error"] = json!(error.to_string());
@@ -140,13 +140,13 @@ impl Ble {
         &mut self,
         driver: &mut Driver<StoreHost>,
         id: String,
-        text: String,
+        body: shum_core::public::PublicBody,
         now: u64,
     ) {
         let Some(mesh) = self.mesh.as_mut() else {
             return;
         };
-        let effects = mesh.broadcast(id, text, now as i64);
+        let effects = mesh.broadcast(id, body, now as i64);
         self.apply(driver, effects);
     }
 

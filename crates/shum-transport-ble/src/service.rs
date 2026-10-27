@@ -2,7 +2,12 @@
 //! peripheral helper carry the radio, `mesh` decides everything else.
 use crate::{mesh, radio};
 use anyhow::{Context, Result};
-use shum_core::{card::Card, crypto::Secret32, packet::Packet, public::PublicNote};
+use shum_core::{
+    card::Card,
+    crypto::Secret32,
+    packet::Packet,
+    public::{PublicBody, PublicEvent},
+};
 use std::{
     collections::HashSet,
     path::Path,
@@ -28,13 +33,13 @@ pub enum Update {
         state: String,
     },
     Public {
-        note: Box<PublicNote>,
+        event: Box<PublicEvent>,
         timestamp: i64,
     },
 }
 enum Command {
     Send(String, Box<Packet>),
-    Broadcast(String, String),
+    Broadcast(String, PublicBody),
     Profile(Box<Card>, Vec<Card>, HashSet<String>),
 }
 pub struct Ble {
@@ -79,7 +84,7 @@ impl Ble {
                     },
                     Some(command)=requests.recv()=>match command {
                         Command::Send(id,packet)=>mesh.send(&id,&packet,now()).map(|e|vec![e]),
-                        Command::Broadcast(id,text)=>mesh.broadcast(id,text,now()),
+                        Command::Broadcast(id,body)=>mesh.broadcast(id,body,now()),
                         Command::Profile(card,pins,blocked)=>mesh.update(*card,pins,blocked,now()),
                     },
                     _=tick.tick()=>mesh.tick(now()),
@@ -123,8 +128,8 @@ impl Ble {
                                     noise,
                                     packet,
                                 },
-                                mesh::Effect::Public { note, timestamp } => {
-                                    Update::Public { note, timestamp }
+                                mesh::Effect::Public { event, timestamp } => {
+                                    Update::Public { event, timestamp }
                                 }
                             };
                             if send.send(update).await.is_err() {
@@ -150,10 +155,10 @@ impl Ble {
             .try_send(Command::Send(routing, packet))
             .context("BLE outbound queue full")
     }
-    /// Writes `text` as note `id` to everyone on the mesh.
-    pub fn broadcast(&self, id: String, text: String) -> Result<()> {
+    /// Sends event `id` to everyone on the mesh.
+    pub fn broadcast(&self, id: String, body: PublicBody) -> Result<()> {
         self.commands
-            .try_send(Command::Broadcast(id, text))
+            .try_send(Command::Broadcast(id, body))
             .context("BLE outbound queue full")
     }
     pub fn profile(&self, card: Card, pins: Vec<Card>, blocked: HashSet<String>) -> Result<()> {
