@@ -269,6 +269,47 @@ impl Engine {
         }
         Ok(actions)
     }
+    /// This profile's invitation to `id` while no relay or nearby device has it.
+    pub fn waiting_invitation(&self, id: &str) -> Option<&QueuedControl> {
+        let event = &self
+            .inbox
+            .invitations
+            .get(id)
+            .filter(|v| v.phase == Phase::OutgoingPending)?
+            .event_id;
+        self.outbox.controls.iter().find(|c| {
+            c.id == *event
+                && c.kind == ControlKind::InvitationRequest
+                && !c.retry.nostr_accepted
+                && c.retry.attempts == 0
+        })
+    }
+    /// Takes back an invitation that was never handed to a relay or device.
+    pub fn cancel_invitation(&mut self, id: &str) -> Result<()> {
+        let event = self
+            .waiting_invitation(id)
+            .filter(|c| c.retry.nostr_attempts == 0)
+            .ok_or(Error::Invalid("invitation already sent"))?
+            .id
+            .clone();
+        let own = format!("own-invitation:{event}");
+        // The copy for this profile's other devices waits for relays too.
+        if self
+            .outbox
+            .controls
+            .iter()
+            .any(|c| c.id == own && c.retry.nostr_attempts > 0)
+        {
+            return Err(Error::Invalid("invitation already shared"));
+        }
+        self.outbox
+            .controls
+            .retain(|c| c.id != event && c.id != own);
+        // A request is only made from Ready, so dropping it restores Ready.
+        self.inbox.invitations.remove(id);
+        self.inbox.outgoing_requests.remove(id);
+        Ok(())
+    }
     pub fn receive(
         &mut self,
         packet: Packet,

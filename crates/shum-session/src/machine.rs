@@ -411,7 +411,7 @@ impl<H: Host> Machine<H> {
             )
             .collect();
         cards.retain(|id, _| !self.engine.inbox.blocked.contains(id));
-        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"addressBook":crate::directory::in_address_book(self.host.state(),&id),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
+        let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"addressBook":crate::directory::in_address_book(self.host.state(),&id),"invitationWaiting":self.engine.waiting_invitation(&id).is_some(),"invitationCancellable":self.engine.waiting_invitation(&id).is_some_and(|c|c.retry.nostr_attempts==0),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
         contacts.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
@@ -501,6 +501,20 @@ impl<H: Host> Machine<H> {
             },
             Request::Invite { .. } | Request::Accept { .. } | Request::Decline { .. } => {
                 bail!("internal invitation dispatch")
+            }
+            Request::CancelInvitation { contact } => {
+                let id = self.contact(&contact)?;
+                if !self
+                    .engine
+                    .waiting_invitation(&id)
+                    .is_some_and(|c| c.retry.nostr_attempts == 0)
+                {
+                    return Err(text("Приглашение уже отправлено"));
+                }
+                self.apply(|e, _| {
+                    e.cancel_invitation(&id)?;
+                    Ok(vec![])
+                })?;
             }
             Request::Send {
                 contact,

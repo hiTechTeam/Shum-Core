@@ -58,6 +58,13 @@ pub fn project(previous: &Value, before: &Engine, after: &Engine, clear: Option<
             }
         }
     }
+    // A cancelled invitation leaves no row behind.
+    for (id, invitation) in &before.inbox.invitations {
+        if invitation.phase == Phase::OutgoingPending && !after.inbox.invitations.contains_key(id) {
+            let gone = format!("invitation:{id}:{}", invitation.event_id);
+            events.retain(|e| e["id"] != gone.as_str());
+        }
+    }
     if let Some(id) = clear {
         events.retain(|e| e["contactID"] != id);
     }

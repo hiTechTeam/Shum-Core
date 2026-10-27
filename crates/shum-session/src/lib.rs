@@ -120,6 +120,10 @@ pub enum Request {
     Decline {
         contact: String,
     },
+    /// Takes back an invitation that has not left this device.
+    CancelInvitation {
+        contact: String,
+    },
     Send {
         contact: String,
         text: String,

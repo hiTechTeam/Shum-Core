@@ -169,6 +169,94 @@ fn a_lookup_by_network_id_answers_later() {
 }
 
 #[test]
+fn an_invitation_made_offline_leaves_once_relays_connect() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let anya_id = anya.host.keys.owner_id();
+    let link = boris.engine.inbox.own.invitation().unwrap();
+    ok(&mut anya, json!({"command":"add","link":link}));
+    anya.set_relays(vec![]);
+    ok(
+        &mut anya,
+        json!({"command":"invite","contact":boris.host.keys.owner_id()}),
+    );
+    anya.tick();
+    relay(&mut anya, &mut boris);
+    assert!(
+        boris.engine.inbox.contacts.is_empty(),
+        "nothing leaves offline"
+    );
+    let boris_row = |m: &Machine<Memory>| {
+        m.snapshot()["contacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["card"]["name"] == "Борис")
+            .unwrap()
+            .clone()
+    };
+    let row = boris_row(&anya);
+    assert_eq!(row["invitationWaiting"], true);
+    assert_eq!(row["invitationCancellable"], true);
+
+    anya.set_relays(vec!["wss://relay.example".into()]);
+    anya.tick();
+    relay(&mut anya, &mut boris);
+    assert_eq!(
+        boris.engine.inbox.phase(&anya_id),
+        shum_core::rules::Phase::IncomingPending
+    );
+    assert_eq!(boris_row(&anya)["invitationWaiting"], false);
+    let request: Request = serde_json::from_value(
+        json!({"command":"cancel_invitation","contact":boris.host.keys.owner_id()}),
+    )
+    .unwrap();
+    assert_eq!(
+        anya.request(2, request).unwrap().unwrap_err(),
+        shum_session::Failure::text("Приглашение уже отправлено")
+    );
+}
+
+#[test]
+fn an_invitation_that_never_left_can_be_cancelled() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let boris_id = boris.host.keys.owner_id();
+    let link = boris.engine.inbox.own.invitation().unwrap();
+    ok(&mut anya, json!({"command":"add","link":link}));
+    anya.set_relays(vec![]);
+    ok(&mut anya, json!({"command":"invite","contact":boris_id}));
+    ok(
+        &mut anya,
+        json!({"command":"cancel_invitation","contact":boris_id}),
+    );
+    let snapshot = anya.snapshot();
+    let row = &snapshot["contacts"][0];
+    assert_eq!(row["phase"], "ready");
+    assert_eq!(row["invitationWaiting"], false);
+    assert!(
+        snapshot["events"].as_array().unwrap().is_empty(),
+        "no \"invitation sent\" row is left"
+    );
+
+    anya.set_relays(vec!["wss://relay.example".into()]);
+    anya.tick();
+    relay(&mut anya, &mut boris);
+    assert!(
+        boris.engine.inbox.contacts.is_empty(),
+        "nothing leaves later"
+    );
+    // Inviting again works as before.
+    ok(&mut anya, json!({"command":"invite","contact":boris_id}));
+    relay(&mut anya, &mut boris);
+    assert!(boris
+        .engine
+        .inbox
+        .requests
+        .contains_key(&anya.host.keys.owner_id()));
+}
+
+#[test]
 fn a_profile_cannot_add_its_own_card() {
     let mut anya = profile("Аня");
     let link = anya.engine.inbox.own.invitation().unwrap();
