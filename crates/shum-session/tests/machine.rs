@@ -411,6 +411,33 @@ fn the_open_chat_shows_notes_from_everyone_nearby_for_a_day() {
     }
     assert_eq!(boris.snapshot()["publicChat"].as_array().unwrap().len(), 20);
 
+    // Someone relayed by others is on the mesh without being nearby.
+    ok(
+        &mut boris,
+        json!({"command":"block","contact":anya_card.id(),"blocked":false}),
+    );
+    let noise = anya.host.keys.noise.noise_public();
+    boris
+        .nearby(Nearby::Peer {
+            routing: hex::encode(shum_core::wire::routing_id(&noise)),
+            card: Box::new(anya_card.clone()),
+            noise,
+            distance: None,
+            direct: false,
+        })
+        .unwrap();
+    let row = boris.snapshot()["contacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == anya_card.id().as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (row["mesh"].clone(), row["nearby"].clone()),
+        (json!(true), json!(false))
+    );
+
     // A day later the notes are gone.
     let later = now + shum_session::public::RETENTION_MS + 1;
     assert!(shum_session::public::notes(boris.host.state(), later).is_empty());
