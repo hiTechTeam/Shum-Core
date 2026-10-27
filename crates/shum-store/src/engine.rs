@@ -276,6 +276,34 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
             });
         }
     }
+    // Copies for this profile's other devices, kept until a relay takes them.
+    for row in rows(state, "ownOutbox")? {
+        let packet: Packet = decode(&row["packet"])?;
+        let kind = if packet.own_invitation.is_some() {
+            ControlKind::OwnInvitation
+        } else if packet.own_read.is_some() {
+            ControlKind::OwnRead
+        } else if packet.own_reaction.is_some() {
+            ControlKind::OwnReaction
+        } else if packet.own_retract.is_some() {
+            ControlKind::OwnRetract
+        } else if packet.own_clear.is_some() {
+            ControlKind::OwnClear
+        } else {
+            return Err(Error::Invalid("own control kind"));
+        };
+        engine.outbox.controls.push(QueuedControl {
+            id: row["id"]
+                .as_str()
+                .ok_or(Error::Invalid("own control id"))?
+                .into(),
+            recipient: engine.inbox.own.clone(),
+            packet,
+            expires: millis(&row["expires"])?.ok_or(Error::Invalid("own control expiry"))?,
+            kind,
+            retry: retry(row)?,
+        });
+    }
     for row in rows(state, "profileOutbox")? {
         let id = row["recipientID"]
             .as_str()
@@ -568,6 +596,15 @@ pub fn project(previous: &Value, engine: &Engine, now: i64) -> Result<Value> {
         }
         state[bucket] = ordered(values, previous, bucket)?;
     }
+    // Kept in the header, not a record bucket, so earlier versions still open it.
+    let mut values = Vec::new();
+    for control in engine.outbox.controls.iter().filter(|c| c.kind.own()) {
+        let mut row = json!({"id":control.id, "expires":date(control.expires)});
+        row["packet"] = serde_json::to_value(&control.packet)?;
+        put_retry(&mut row, &control.retry, true)?;
+        values.push(row);
+    }
+    state["ownOutbox"] = values.into();
     let profiles = old_rows(previous, "profileOutbox")?;
     let mut values = Vec::new();
     for delivery in &engine.outbox.profiles {
