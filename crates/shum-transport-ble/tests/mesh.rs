@@ -559,3 +559,39 @@ fn a_public_note_signed_by_someone_else_is_refused() {
     frame.signature = Some(msign.sign(&frame.signing_bytes().unwrap()).to_vec());
     assert!(c.receive("m", &frame.encode(false).unwrap(), 1000).is_err());
 }
+
+#[test]
+fn a_peer_heard_through_others_leaves_when_its_announces_stop() {
+    let (ac, an, asign) = identity(1);
+    let (bc, bn, bsign) = identity(11);
+    let (cc, cn, csign) = identity(21);
+    let mut a = Mesh::new(ac.clone(), an, asign, vec![], HashSet::new()).unwrap();
+    let mut b = Mesh::new(bc.clone(), bn, bsign, vec![], HashSet::new()).unwrap();
+    let mut c = Mesh::new(cc, cn, csign, vec![], HashSet::new()).unwrap();
+    let mut start = vec![];
+    let links = [('a', "b"), ('b', "a"), ('b', "c"), ('c', "b")];
+    for (from, link) in links {
+        let mesh = match from {
+            'a' => &mut a,
+            'b' => &mut b,
+            _ => &mut c,
+        };
+        let effects = mesh.connected(link.into(), 180, None, 1000).unwrap();
+        start.extend(effects.into_iter().map(|e| (from, e)));
+    }
+    line(start, &mut [&mut a, &mut b, &mut c]);
+    let gone = |effects: Vec<Effect>| -> Vec<String> {
+        effects
+            .into_iter()
+            .filter_map(|e| match e {
+                Effect::Gone(id) => Some(id),
+                _ => None,
+            })
+            .collect()
+    };
+    // Still within the silence allowed: C keeps A.
+    assert!(gone(c.tick(30_000).unwrap()).is_empty());
+    // A went quiet; B, connected directly, stays.
+    assert_eq!(gone(c.tick(50_000).unwrap()), vec![routing(&ac)]);
+    assert!(gone(c.tick(60_000).unwrap()).is_empty(), "gone once");
+}

@@ -51,7 +51,12 @@ struct Peer {
     state_echo: bool,
     first_seen: i64,
     hello: i64,
+    /// When the peer's last signed announce arrived.
+    heard: i64,
 }
+/// A peer heard only through others is gone after this long without an
+/// announce; everyone announces every 15 seconds.
+const RELAYED_SILENCE: i64 = 45_000;
 pub struct Mesh {
     own: Card,
     noise: Secret32,
@@ -422,7 +427,9 @@ impl Mesh {
                     state_echo: false,
                     first_seen: now,
                     hello: 0,
+                    heard: now,
                 });
+                p.heard = now;
                 p.links.insert(link.into());
                 if frame.ttl == 7 {
                     p.direct.insert(link.into());
@@ -597,6 +604,15 @@ impl Mesh {
     }
     pub fn tick(&mut self, now: i64) -> Result<Vec<Effect>> {
         let mut effects = vec![];
+        // A direct peer leaves with its link; one heard through others
+        // leaves when its announces stop.
+        self.peers.retain(|routing, p| {
+            let silent = p.direct.is_empty() && now - p.heard > RELAYED_SILENCE;
+            if silent {
+                effects.push(Effect::Gone(routing.clone()));
+            }
+            !silent
+        });
         if now - self.announce_at >= 15_000 {
             self.announce_at = now;
             let frame = self.announcement(now)?;
