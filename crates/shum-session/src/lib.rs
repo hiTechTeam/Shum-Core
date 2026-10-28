@@ -155,6 +155,11 @@ pub enum Request {
     PublicRetract {
         note: String,
     },
+    /// Tells everyone nearby that the user started or stopped typing in the
+    /// open chat. It goes over Bluetooth only.
+    PublicTyping {
+        active: bool,
+    },
     Read {
         contact: String,
     },

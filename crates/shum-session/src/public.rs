@@ -124,6 +124,8 @@ pub fn apply(
             chat["retracted"][&target] = json!(now);
             true
         }
+        // Typing is shown, never stored.
+        PublicBody::Typing { .. } => false,
     };
     if changed {
         if !chat["authors"].is_object() {

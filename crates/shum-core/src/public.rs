@@ -41,6 +41,9 @@ pub enum PublicBody {
         #[serde(rename = "noteID")]
         note_id: String,
     },
+    /// The sender started or stopped typing. Nothing keeps it; it fades out
+    /// on its own if the stop never arrives.
+    Typing { active: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +92,7 @@ impl PublicEvent {
                 note_id, author_id, ..
             } => short_id(note_id) && short_id(author_id),
             PublicBody::Retract { note_id } => short_id(note_id),
+            PublicBody::Typing { .. } => true,
         };
         if !valid {
             return Err(Error::Invalid("public event body"));

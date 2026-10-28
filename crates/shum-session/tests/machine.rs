@@ -646,3 +646,51 @@ fn refused_open_chat_copies_wait_before_they_go_again() {
     );
     assert_eq!(copy(&mut mac, &mut phone), 0);
 }
+
+#[test]
+fn typing_in_the_open_chat_goes_over_bluetooth_and_fades() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let typing = |m: &Machine<Memory>| m.snapshot()["publicTyping"].as_array().unwrap().len();
+
+    ok(&mut anya, json!({"command":"public_typing","active":true}));
+    // A second start within seconds is not sent again.
+    ok(&mut anya, json!({"command":"public_typing","active":true}));
+    let effects = anya.effects();
+    assert_eq!(
+        effects.len(),
+        1,
+        "one Bluetooth broadcast, nothing to the relays"
+    );
+    let Effect::Broadcast { id, body } = effects.into_iter().next().unwrap() else {
+        panic!("typing goes over Bluetooth only");
+    };
+    let card = anya.engine.inbox.own.clone();
+    hear(
+        &mut boris,
+        &shum_core::public::PublicEvent::new(id, body, card).unwrap(),
+    );
+    assert_eq!(typing(&boris), 1);
+    assert_eq!(boris.snapshot()["publicTyping"][0]["name"], "Аня");
+    // Typing is not kept and makes no copies for other devices.
+    assert!(boris.snapshot()["publicChat"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(boris.host.state()["publicCopies"]
+        .as_array()
+        .is_none_or(|c| c.is_empty()));
+
+    ok(&mut anya, json!({"command":"public_typing","active":false}));
+    mesh(&mut anya, &mut boris);
+    assert_eq!(typing(&boris), 0);
+
+    // A note ends the typing at once.
+    ok(&mut anya, json!({"command":"public_typing","active":true}));
+    mesh(&mut anya, &mut boris);
+    ok(&mut anya, json!({"command":"broadcast","text":"Привет"}));
+    mesh(&mut anya, &mut boris);
+    assert_eq!(typing(&boris), 0);
+    // The own typing never shows.
+    assert_eq!(typing(&anya), 0);
+}

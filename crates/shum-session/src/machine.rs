@@ -54,6 +54,10 @@ pub trait Host {
     }
 }
 
+/// Own typing in the open chat goes out again this often while it lasts.
+const PUBLIC_TYPING_REPEAT_MS: i64 = 4_000;
+/// Someone's typing shows this long after their last signal.
+const PUBLIC_TYPING_SHOWN_MS: i64 = 6_000;
 /// Open-chat copies sent in one tick at most.
 const COPIES_PER_TICK: usize = 10;
 /// A refused copy waits this long, doubling up to the maximum.
@@ -189,6 +193,10 @@ pub struct Machine<H: Host> {
     public_rate: HashMap<String, Vec<i64>>,
     /// Refused open-chat copies: how many times, and when to try again.
     copy_retry: HashMap<String, (u32, i64)>,
+    /// Who is typing in the open chat, by card ID, until when.
+    public_typing: HashMap<String, (Card, i64)>,
+    /// The last own typing signal in the open chat and when it went.
+    public_typing_sent: Option<(bool, i64)>,
     replied: HashMap<String, i64>,
     stopped: bool,
     last_error: Option<String>,
@@ -224,6 +232,8 @@ impl<H: Host> Machine<H> {
             lookups: HashMap::new(),
             public_rate: HashMap::new(),
             copy_retry: HashMap::new(),
+            public_typing: HashMap::new(),
+            public_typing_sent: None,
             replied: HashMap::new(),
             stopped: false,
             last_error: None,
@@ -469,7 +479,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicTyping":self.public_typing.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
@@ -608,6 +618,22 @@ impl<H: Host> Machine<H> {
                     author_id: author,
                     reaction,
                 })?;
+            }
+            Request::PublicTyping { active } => {
+                let time = now();
+                // As in a chat: on a start or a stop, and again every few
+                // seconds while typing goes on.
+                let repeat = self.public_typing_sent.is_some_and(|(was, at)| {
+                    was == active && (!active || time - at < PUBLIC_TYPING_REPEAT_MS)
+                });
+                if self.public_typing_sent.is_none() && !active || repeat {
+                    return Ok(json!({}));
+                }
+                self.public_typing_sent = Some((active, time));
+                self.effects.push(Effect::Broadcast {
+                    id: uuid()?,
+                    body: PublicBody::Typing { active },
+                });
             }
             Request::PublicRetract { note } => {
                 let own = self.engine.inbox.own.id();
@@ -1166,6 +1192,20 @@ impl<H: Host> Machine<H> {
             // Blocked people stay visible: the open chat is not a private one.
             Nearby::Public { event, timestamp } => {
                 let author = event.card.id();
+                if let PublicBody::Typing { active } = event.body {
+                    if author != self.engine.inbox.own.id() {
+                        if active {
+                            let until = now() + PUBLIC_TYPING_SHOWN_MS;
+                            self.public_typing.insert(author, (event.card, until));
+                        } else {
+                            self.public_typing.remove(&author);
+                        }
+                    }
+                    return Ok(());
+                }
+                if matches!(event.body, PublicBody::Note { .. }) {
+                    self.public_typing.remove(&author);
+                }
                 if matches!(event.body, PublicBody::Note { .. })
                     && crate::public::contains(self.host.state(), &author, &event.id)
                 {
@@ -1211,6 +1251,8 @@ impl<H: Host> Machine<H> {
             self.last_error = Some(error.to_string());
         }
         self.send_public_copies();
+        let time = now();
+        self.public_typing.retain(|_, (_, until)| *until > time);
         let expired: Vec<_> = self
             .lookups
             .iter()
