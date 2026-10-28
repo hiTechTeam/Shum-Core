@@ -54,6 +54,12 @@ pub trait Host {
     }
 }
 
+/// Open-chat copies sent in one tick at most.
+const COPIES_PER_TICK: usize = 10;
+/// A refused copy waits this long, doubling up to the maximum.
+const COPY_RETRY_MS: i64 = 5_000;
+const COPY_RETRY_MAX_MS: i64 = 10 * 60_000;
+
 /// What the client does next.
 pub enum Effect {
     /// Publish a signed gift wrap to the relays. With an operation the
@@ -181,6 +187,8 @@ pub struct Machine<H: Host> {
     lookups: HashMap<String, Lookup>,
     /// When each author's recent open-chat notes arrived, to drop floods.
     public_rate: HashMap<String, Vec<i64>>,
+    /// Refused open-chat copies: how many times, and when to try again.
+    copy_retry: HashMap<String, (u32, i64)>,
     replied: HashMap<String, i64>,
     stopped: bool,
     last_error: Option<String>,
@@ -215,6 +223,7 @@ impl<H: Host> Machine<H> {
             pushed: HashSet::new(),
             lookups: HashMap::new(),
             public_rate: HashMap::new(),
+            copy_retry: HashMap::new(),
             replied: HashMap::new(),
             stopped: false,
             last_error: None,
@@ -762,16 +771,32 @@ impl<H: Host> Machine<H> {
         Ok(())
     }
 
-    /// Sends the waiting copies once there are relays to take them.
+    /// Sends the waiting copies once there are relays to take them. A
+    /// refused copy waits longer each time, so copies never crowd out the
+    /// messages, typing and "in chat" that share the relays.
     fn send_public_copies(&mut self) {
         if self.relays.is_empty() {
             return;
         }
         let own = self.engine.inbox.own.nostr_key.clone();
-        for (operation, content) in crate::public::copies(self.host.state()) {
-            if self.inflight.contains(&operation) {
+        let time = now();
+        let mut sent = 0;
+        let copies = crate::public::copies(self.host.state());
+        self.copy_retry
+            .retain(|operation, _| copies.iter().any(|(o, _)| o == operation));
+        for (operation, content) in copies {
+            if sent >= COPIES_PER_TICK {
+                break;
+            }
+            if self.inflight.contains(&operation)
+                || self
+                    .copy_retry
+                    .get(&operation)
+                    .is_some_and(|(_, next)| *next > time)
+            {
                 continue;
             }
+            sent += 1;
             match wrap(&self.host.keys().nostr, &own, content) {
                 Ok(event) => {
                     self.inflight.insert(operation.clone());
@@ -1048,9 +1073,14 @@ impl<H: Host> Machine<H> {
         self.inflight.remove(operation);
         if operation.starts_with(crate::public::COPY_OPERATION) {
             if accepted {
+                self.copy_retry.remove(operation);
                 if let Err(error) = self.edit(|state| crate::public::copied(state, operation)) {
                     self.last_error = Some(error.to_string());
                 }
+            } else {
+                let (attempts, next) = self.copy_retry.entry(operation.into()).or_insert((0, 0));
+                *attempts = (*attempts + 1).min(8);
+                *next = now() + (COPY_RETRY_MS << (*attempts - 1)).min(COPY_RETRY_MAX_MS);
             }
             return;
         }

@@ -602,3 +602,47 @@ fn the_open_chat_reaches_the_profiles_other_devices_through_relays() {
     // The Mac does not copy what it got from the phone back again.
     assert_eq!(copy(&mut mac, &mut phone), 0);
 }
+
+#[test]
+fn refused_open_chat_copies_wait_before_they_go_again() {
+    let mut phone = profile("Аня");
+    let mut mac = twin(&phone);
+    for n in 0..30 {
+        ok(
+            &mut phone,
+            json!({"command":"broadcast","text":format!("note {n}")}),
+        );
+    }
+    // Each note leaves at once; the relays refuse them all.
+    let refuse = |from: &mut Machine<Memory>| {
+        let mut sent = 0;
+        for effect in from.effects() {
+            if let Effect::Publish {
+                operation: Some(operation),
+                ..
+            } = effect
+            {
+                if operation.starts_with("public-copy:") {
+                    sent += 1;
+                    from.published(&operation, false);
+                }
+            }
+        }
+        sent
+    };
+    assert_eq!(refuse(&mut phone), 30);
+    for _ in 0..3 {
+        phone.tick();
+        assert_eq!(
+            refuse(&mut phone),
+            0,
+            "refused copies wait instead of going every tick"
+        );
+    }
+    // Nothing is lost: the copies still wait for a relay that takes them.
+    assert_eq!(
+        phone.host.state()["publicCopies"].as_array().unwrap().len(),
+        30
+    );
+    assert_eq!(copy(&mut mac, &mut phone), 0);
+}
