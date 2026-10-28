@@ -694,3 +694,28 @@ fn typing_in_the_open_chat_goes_over_bluetooth_and_fades() {
     // The own typing never shows.
     assert_eq!(typing(&anya), 0);
 }
+
+#[test]
+fn people_with_the_same_name_keep_their_order() {
+    let mut anya = profile("Аня");
+    for _ in 0..4 {
+        let twin = profile("pupokman");
+        let link = twin.engine.inbox.own.invitation().unwrap();
+        ok(&mut anya, json!({"command":"add","link":link}));
+    }
+    let order = |m: &Machine<Memory>| -> Vec<String> {
+        m.snapshot()["contacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let first = order(&anya);
+    let mut sorted = first.clone();
+    sorted.sort();
+    assert_eq!(first, sorted, "same names follow their Shum IDs");
+    for _ in 0..20 {
+        assert_eq!(order(&anya), first);
+    }
+}

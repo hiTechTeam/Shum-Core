@@ -54,6 +54,18 @@ pub trait Host {
     }
 }
 
+/// By name, then by ID: people may share a name, and a list must not
+/// reshuffle them on every snapshot.
+fn by_name(a: &Value, b: &Value) -> std::cmp::Ordering {
+    let key = |v: &Value| {
+        (
+            v["card"]["name"].as_str().map(str::to_owned),
+            v["id"].as_str().map(str::to_owned),
+        )
+    };
+    key(a).cmp(&key(b))
+}
+
 /// Own typing in the open chat goes out again this often while it lasts.
 const PUBLIC_TYPING_REPEAT_MS: i64 = 4_000;
 /// Someone's typing shows this long after their last signal.
@@ -453,7 +465,7 @@ impl<H: Host> Machine<H> {
             .collect();
         cards.retain(|id, _| !self.engine.inbox.blocked.contains(id));
         let mut contacts:Vec<_>=cards.into_iter().map(|(id,card)|json!({"id":id,"card":card,"phase":self.engine.inbox.phase(&id),"unread":self.engine.inbox.messages.iter().filter(|m|m.envelope.sender.id()==*id&&m.unread).count(),"nearby":self.nearby.values().any(|p|p.direct && p.peer.card.id()==id),"mesh":self.nearby.values().any(|p|p.peer.card.id()==id),"distance":self.nearby.values().find(|p|p.direct && p.peer.card.id()==id).and_then(|p|p.distance),"typing":self.engine.inbox.typing.get(&id).is_some_and(|s|s.active(now())),"addressBook":crate::directory::in_address_book(self.host.state(),&id),"invitationWaiting":self.engine.waiting_invitation(&id).is_some(),"invitationCancellable":self.engine.waiting_invitation(&id).is_some_and(|c|c.retry.nostr_attempts==0),"online":self.engine.inbox.presence.get(&id).is_some_and(|s|s.active(now()))})).collect();
-        contacts.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
+        contacts.sort_by(by_name);
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
             messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply}));
@@ -478,7 +490,7 @@ impl<H: Host> Machine<H> {
             .iter()
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
-        blocked.sort_by(|a, b| a["card"]["name"].as_str().cmp(&b["card"]["name"].as_str()));
+        blocked.sort_by(by_name);
         let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicTyping":self.public_typing.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
