@@ -719,3 +719,46 @@ fn people_with_the_same_name_keep_their_order() {
         assert_eq!(order(&anya), first);
     }
 }
+
+#[test]
+fn the_open_chat_shows_who_has_it_open() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let present = |m: &Machine<Memory>| -> Vec<String> {
+        m.snapshot()["publicPresent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Nearby but not in the open chat: not listed.
+    assert!(present(&boris).is_empty());
+    ok(
+        &mut anya,
+        json!({"command":"public_presence","online":true}),
+    );
+    // Opening it twice says it once.
+    ok(
+        &mut anya,
+        json!({"command":"public_presence","online":true}),
+    );
+    assert_eq!(mesh(&mut anya, &mut boris).len(), 1);
+    assert_eq!(present(&boris), vec!["Аня"]);
+    assert!(present(&anya).is_empty(), "the own profile is not listed");
+    // While it stays open nothing repeats before 15 seconds.
+    anya.tick();
+    assert!(mesh(&mut anya, &mut boris).is_empty());
+
+    ok(
+        &mut anya,
+        json!({"command":"public_presence","online":false}),
+    );
+    mesh(&mut anya, &mut boris);
+    assert!(present(&boris).is_empty());
+
+    // Writing in the open chat also says one is there.
+    ok(&mut anya, json!({"command":"public_typing","active":true}));
+    mesh(&mut anya, &mut boris);
+    assert_eq!(present(&boris), vec!["Аня"]);
+}

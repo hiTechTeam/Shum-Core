@@ -66,6 +66,10 @@ fn by_name(a: &Value, b: &Value) -> std::cmp::Ordering {
     key(a).cmp(&key(b))
 }
 
+/// Being in the open chat goes out again this often while it is on screen.
+const PUBLIC_PRESENCE_REPEAT_MS: i64 = 15_000;
+/// Someone shows as in the open chat this long after their last signal.
+const PUBLIC_PRESENCE_SHOWN_MS: i64 = 40_000;
 /// Own typing in the open chat goes out again this often while it lasts.
 const PUBLIC_TYPING_REPEAT_MS: i64 = 4_000;
 /// Someone's typing shows this long after their last signal.
@@ -209,6 +213,10 @@ pub struct Machine<H: Host> {
     public_typing: HashMap<String, (Card, i64)>,
     /// The last own typing signal in the open chat and when it went.
     public_typing_sent: Option<(bool, i64)>,
+    /// Who has the open chat on screen, by card ID, until when.
+    public_present: HashMap<String, (Card, i64)>,
+    /// The open chat is on screen here; when that last went out.
+    public_here: Option<i64>,
     replied: HashMap<String, i64>,
     stopped: bool,
     last_error: Option<String>,
@@ -246,6 +254,8 @@ impl<H: Host> Machine<H> {
             copy_retry: HashMap::new(),
             public_typing: HashMap::new(),
             public_typing_sent: None,
+            public_present: HashMap::new(),
+            public_here: None,
             replied: HashMap::new(),
             stopped: false,
             last_error: None,
@@ -491,7 +501,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(by_name);
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicTyping":self.public_typing.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicPresent":self.public_present.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"publicTyping":self.public_typing.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
@@ -646,6 +656,15 @@ impl<H: Host> Machine<H> {
                     id: uuid()?,
                     body: PublicBody::Typing { active },
                 });
+            }
+            Request::PublicPresence { online } => {
+                if online != self.public_here.is_some() {
+                    self.public_here = online.then(now);
+                    self.effects.push(Effect::Broadcast {
+                        id: uuid()?,
+                        body: PublicBody::Presence { online },
+                    });
+                }
             }
             Request::PublicRetract { note } => {
                 let own = self.engine.inbox.own.id();
@@ -1204,6 +1223,19 @@ impl<H: Host> Machine<H> {
             // Blocked people stay visible: the open chat is not a private one.
             Nearby::Public { event, timestamp } => {
                 let author = event.card.id();
+                // Anything from someone in the open chat says they are there.
+                if author != self.engine.inbox.own.id() {
+                    if matches!(event.body, PublicBody::Presence { online: false }) {
+                        self.public_present.remove(&author);
+                    } else {
+                        let until = now() + PUBLIC_PRESENCE_SHOWN_MS;
+                        self.public_present
+                            .insert(author.clone(), (event.card.clone(), until));
+                    }
+                }
+                if matches!(event.body, PublicBody::Presence { .. }) {
+                    return Ok(());
+                }
                 if let PublicBody::Typing { active } = event.body {
                     if author != self.engine.inbox.own.id() {
                         if active {
@@ -1265,6 +1297,20 @@ impl<H: Host> Machine<H> {
         self.send_public_copies();
         let time = now();
         self.public_typing.retain(|_, (_, until)| *until > time);
+        self.public_present.retain(|_, (_, until)| *until > time);
+        if self
+            .public_here
+            .is_some_and(|at| time - at >= PUBLIC_PRESENCE_REPEAT_MS)
+        {
+            self.public_here = Some(time);
+            match uuid() {
+                Ok(id) => self.effects.push(Effect::Broadcast {
+                    id,
+                    body: PublicBody::Presence { online: true },
+                }),
+                Err(error) => self.last_error = Some(error.to_string()),
+            }
+        }
         let expired: Vec<_> = self
             .lookups
             .iter()

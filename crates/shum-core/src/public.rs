@@ -44,6 +44,9 @@ pub enum PublicBody {
     /// The sender started or stopped typing. Nothing keeps it; it fades out
     /// on its own if the stop never arrives.
     Typing { active: bool },
+    /// The sender has the open chat on screen, repeated while it stays
+    /// there, or left it. Like typing, it is shown and never kept.
+    Presence { online: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,7 +95,7 @@ impl PublicEvent {
                 note_id, author_id, ..
             } => short_id(note_id) && short_id(author_id),
             PublicBody::Retract { note_id } => short_id(note_id),
-            PublicBody::Typing { .. } => true,
+            PublicBody::Typing { .. } | PublicBody::Presence { .. } => true,
         };
         if !valid {
             return Err(Error::Invalid("public event body"));

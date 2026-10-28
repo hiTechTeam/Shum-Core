@@ -160,6 +160,11 @@ pub enum Request {
     PublicTyping {
         active: bool,
     },
+    /// The open chat came on screen or left it. While it is on screen the
+    /// session repeats this to everyone nearby, over Bluetooth only.
+    PublicPresence {
+        online: bool,
+    },
     Read {
         contact: String,
     },

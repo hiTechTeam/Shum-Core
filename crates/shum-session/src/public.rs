@@ -125,7 +125,7 @@ pub fn apply(
             true
         }
         // Typing is shown, never stored.
-        PublicBody::Typing { .. } => false,
+        PublicBody::Typing { .. } | PublicBody::Presence { .. } => false,
     };
     if changed {
         if !chat["authors"].is_object() {
