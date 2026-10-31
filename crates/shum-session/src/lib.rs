@@ -137,6 +137,10 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<shum_core::packet::Reply>,
     },
+    /// The JPEG (base64) of the photo of message `message`, once it is here.
+    Photo {
+        message: String,
+    },
     /// Sends a JPEG (base64) of `width` × `height` pixels, metadata already
     /// stripped. `text` is the caption when `caption`, otherwise a stand-in
     /// such as "Photo" for clients without photos.

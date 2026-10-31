@@ -1043,3 +1043,46 @@ fn a_photo_reaches_the_profiles_other_device() {
     assert_eq!(laptop.host.photos[&id], bytes);
     assert_eq!(copy(&laptop), Some(false));
 }
+
+#[test]
+fn clients_see_a_photo_coming_then_get_its_bytes() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let bytes = jpeg(15_000);
+    let id = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":640,"height":480,"text":"вид из окна","caption":true}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let shown = |m: &Machine<Memory>| {
+        m.snapshot()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == id.as_str())
+            .unwrap()
+            .clone()
+    };
+    let mine = shown(&anya);
+    assert_eq!(mine["photo"]["state"], "ready");
+    assert_eq!(mine["photo"]["caption"], true);
+    assert!(mine["photo"].get("key").is_none(), "the key stays inside");
+
+    let mut sent = anya.effects();
+    hand(&mut sent, &mut anya, &mut boris, false);
+    assert_eq!(shown(&boris)["photo"]["state"], "loading");
+    assert_eq!(shown(&boris)["text"], "вид из окна");
+    let request: Request = serde_json::from_value(json!({"command":"photo","message":id})).unwrap();
+    assert!(boris.request(0, request).unwrap().is_err(), "not here yet");
+
+    hand(&mut sent, &mut anya, &mut boris, true);
+    assert_eq!(shown(&boris)["photo"]["state"], "ready");
+    assert_eq!(
+        ok(&mut boris, json!({"command":"photo","message":id}))["photo"],
+        STANDARD.encode(&bytes)
+    );
+}

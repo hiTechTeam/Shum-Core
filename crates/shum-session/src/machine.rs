@@ -91,6 +91,19 @@ fn shown(people: &HashMap<String, (Card, i64)>) -> Vec<&Card> {
     cards
 }
 
+/// What clients show of a photo: never its key. `state` is ready, loading,
+/// or missing once its message expired before every part came.
+fn photo_view(photo: &Photo, missing: bool, expires_at: i64) -> Value {
+    let state = if !missing {
+        "ready"
+    } else if expires_at > now() {
+        "loading"
+    } else {
+        "missing"
+    };
+    json!({"width":photo.width,"height":photo.height,"size":photo.size,"caption":photo.caption,"state":state})
+}
+
 /// Parts of a photo that came before its message wait this long, this many.
 const EARLY_PART_MS: i64 = 3_600_000;
 const EARLY_PARTS: usize = 64;
@@ -732,10 +745,10 @@ impl<H: Host> Machine<H> {
         contacts.sort_by(by_name);
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
-            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply}));
+            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply,"photo":m.plaintext.photo.as_ref().map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at))}));
         }
         for m in &self.engine.outbox.messages {
-            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"nostrAccepted":m.delivery.nostr_accepted,"pushScheduled":m.push_sent,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone())}));
+            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"nostrAccepted":m.delivery.nostr_accepted,"pushScheduled":m.push_sent,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone()),"photo":m.plaintext.as_ref().and_then(|p|p.photo.as_ref()).map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at))}));
         }
         messages.sort_by_key(|m| {
             (
@@ -866,6 +879,13 @@ impl<H: Host> Machine<H> {
                 }
                 let ephemeral = secret()?;
                 self.apply(|e, c| e.send(&id, &text, reply, &ephemeral, c))?;
+            }
+            Request::Photo { message } => {
+                let jpeg = self
+                    .host
+                    .photo(&message)?
+                    .ok_or_else(|| crate::text("Фото ещё не пришло"))?;
+                return Ok(json!({ "photo": STANDARD.encode(jpeg) }));
             }
             Request::SendPhoto {
                 contact,
