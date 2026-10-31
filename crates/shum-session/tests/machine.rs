@@ -1073,6 +1073,39 @@ fn a_new_name_reaches_the_contact_both_ways() {
     assert_eq!(name(&anya, &boris_id), Some(json!("Борис 2")));
 }
 
+#[test]
+fn a_new_name_wins_over_an_older_card_the_contact_holds_higher() {
+    let (mut anya, mut boris) = chatting();
+    let anya_id = anya.host.keys.owner_id();
+    // Boris holds Anya's card with a higher revision but her name from
+    // before, and another avatar, as when another of her devices once
+    // edited it.
+    let keys = &anya.host.keys;
+    let stale = Card::create(
+        &keys.noise,
+        &keys.signing,
+        &keys.nostr,
+        "Аня".into(),
+        "",
+        Some(7),
+        40,
+    )
+    .unwrap();
+    boris.engine.inbox.contacts.insert(anya_id.clone(), stale);
+    ok(&mut anya, json!({"command":"profile","name":"Аня новая"}));
+    for _ in 0..4 {
+        anya.tick();
+        boris.tick();
+        relay(&mut anya, &mut boris);
+    }
+    assert_eq!(
+        anya.engine.inbox.own.name, "Аня новая",
+        "her edit stays hers"
+    );
+    let name = boris.engine.inbox.contacts[&anya_id].name.clone();
+    assert_eq!(name, "Аня новая", "and reaches him");
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

@@ -35,6 +35,9 @@ pub struct Engine {
     /// and when; and since when it has had something new to tell.
     own_state_sent: Option<(OwnStateView, i64)>,
     own_state_changed: Option<i64>,
+    /// The profile before and after the last edit made on this device, to
+    /// tell a contact's stale copy from another device's newer edit.
+    edited: Option<(Card, Card)>,
 }
 /// The parts of the profile's state its devices share, compared cheaply.
 type OwnStateView = (String, Vec<(String, Phase, i64, String, bool, i64)>);
@@ -60,6 +63,7 @@ impl Engine {
             held_reactions: HashMap::new(),
             own_state_sent: None,
             own_state_changed: None,
+            edited: None,
         })
     }
     /// A failed operation leaves the original state intact. Save `state` before
@@ -583,9 +587,38 @@ impl Engine {
                     }
                     // Another device of this profile edited it later: take its
                     // version instead of answering with ours, or the two would
-                    // keep overriding each other.
-                    if let Some(own) = adopt {
-                        self.share_profile(*own, c)?;
+                    // keep overriding each other. But when the contact's copy
+                    // is just what this device had before its own last edit,
+                    // the contact holds a stale card at a higher revision:
+                    // the edit goes above it instead of giving way to it.
+                    if let Some(known) = adopt {
+                        // Stale: what this device's last edit changed still has its
+                        // value from before the edit there.
+                        let stale = self.edited.as_ref().is_some_and(|(before, after)| {
+                            (before.name != after.name && known.name == before.name)
+                                || (before.bio != after.bio && known.bio == before.bio)
+                                || (before.avatar_seed != after.avatar_seed
+                                    && known.avatar_seed == before.avatar_seed)
+                        });
+                        let own = if stale {
+                            let own = self.inbox.own.clone();
+                            Card::create(
+                                c.keys.noise,
+                                c.keys.signing,
+                                c.keys.nostr,
+                                own.name.clone(),
+                                &own.bio,
+                                own.avatar_seed,
+                                known
+                                    .profile_revision
+                                    .unwrap_or(0)
+                                    .checked_add(1)
+                                    .ok_or(Error::Invalid("profile revision overflow"))?,
+                            )?
+                        } else {
+                            *known
+                        };
+                        self.share_profile(own, c)?;
                     }
                     if reply {
                         let peer = self.contact(&sync.sender.id(), false)?;
@@ -770,6 +803,7 @@ impl Engine {
             seed,
             revision,
         )?;
+        self.edited = Some((self.inbox.own.clone(), own.clone()));
         self.share_profile(own, c)
     }
     fn share_profile(&mut self, own: Card, c: &Context<'_>) -> Result<()> {

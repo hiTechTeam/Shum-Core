@@ -470,6 +470,7 @@ impl<H: Host> Machine<H> {
             uuid: &id,
         };
         let photos = photo_ids(&self.engine);
+        let name = self.engine.inbox.own.name.clone();
         let transition = self.engine.prepare(|engine| operation(engine, &context))?;
         // Invitation history and engine state become durable in one encrypted commit,
         // before any network action can be dispatched.
@@ -478,6 +479,11 @@ impl<H: Host> Machine<H> {
             crate::timeline::project(self.host.state(), &self.engine, &transition.state, clear);
         self.host.commit(next)?;
         self.engine = transition.state;
+        // A name taken from another device of this profile reaches the
+        // client too, so it never shows a name contacts do not have.
+        if self.engine.inbox.own.name != name {
+            self.host.renamed()?;
+        }
         // A photo goes with its message: deleted, withdrawn, cleared or
         // expired.
         let kept = photo_ids(&self.engine);
