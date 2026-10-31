@@ -137,6 +137,8 @@ pub struct Outgoing {
     pub copied: bool,
     /// When that copy was last offered to the relays.
     pub copy_offered: Option<i64>,
+    /// A copy whose photo has not come together on this device yet.
+    pub photo_missing: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControlKind {
@@ -236,6 +238,7 @@ impl Outbox {
             mirror: false,
             copied: false,
             copy_offered: None,
+            photo_missing: false,
         });
         Ok(())
     }
@@ -250,6 +253,7 @@ impl Outbox {
         {
             return false;
         }
+        let photo_missing = copy.plaintext.photo.is_some();
         self.messages.push(Outgoing {
             envelope: copy.envelope,
             plaintext: Some(copy.plaintext),
@@ -265,6 +269,7 @@ impl Outbox {
             mirror: true,
             copied: true,
             copy_offered: None,
+            photo_missing,
         });
         true
     }

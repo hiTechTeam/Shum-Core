@@ -909,3 +909,137 @@ fn a_photo_goes_to_a_contact_nearby_over_bluetooth_in_parts() {
     }
     assert_eq!((messages, parts), (1, 3));
 }
+
+/// Hands the published events for `to` from `effects` across, parts or the
+/// rest as `parts` says, confirming them to `from`; returns how many went.
+fn hand(
+    effects: &mut Vec<Effect>,
+    from: &mut Machine<Memory>,
+    to: &mut Machine<Memory>,
+    parts: bool,
+) -> usize {
+    let mut handed = 0;
+    for effect in std::mem::take(effects) {
+        match effect {
+            Effect::Publish {
+                operation: Some(operation),
+                event,
+            } if operation.starts_with("photo-part:") == parts
+                && event.tags[0][1] == to.inbox() =>
+            {
+                handed += 1;
+                to.incoming(event);
+                from.published(&operation, true);
+            }
+            other => effects.push(other),
+        }
+    }
+    handed
+}
+
+fn status(m: &Machine<Memory>, id: &str) -> shum_core::rules::Delivery {
+    m.engine
+        .outbox
+        .messages
+        .iter()
+        .find(|o| o.envelope.id == id)
+        .unwrap()
+        .delivery
+        .status
+}
+
+#[test]
+fn a_photo_is_acknowledged_only_once_it_came_together() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use shum_core::rules::Delivery;
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let bytes = jpeg(30_000);
+    let id = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":4,"height":3,"text":"Фото"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sent = anya.effects();
+    // The message without its parts: shown as coming, not acknowledged.
+    assert!(hand(&mut sent, &mut anya, &mut boris, false) > 0);
+    boris.tick();
+    relay(&mut boris, &mut anya);
+    assert!(boris
+        .engine
+        .inbox
+        .messages
+        .iter()
+        .any(|m| m.envelope.id == id && m.photo_missing));
+    assert_ne!(status(&anya, &id), Delivery::Delivered);
+
+    // The parts: the photo is stored, the receipt goes back.
+    assert_eq!(hand(&mut sent, &mut anya, &mut boris, true), 3);
+    assert_eq!(boris.host.photos[&id], bytes);
+    assert!(!boris
+        .engine
+        .inbox
+        .messages
+        .iter()
+        .any(|m| m.envelope.id == id && m.photo_missing));
+    relay(&mut anya, &mut boris);
+    assert!(matches!(
+        status(&anya, &id),
+        Delivery::Delivered | Delivery::Read
+    ));
+}
+
+#[test]
+fn parts_that_come_first_wait_for_their_message() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let bytes = jpeg(20_000);
+    let id = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":4,"height":3,"text":"Фото"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sent = anya.effects();
+    assert_eq!(hand(&mut sent, &mut anya, &mut boris, true), 2);
+    assert!(!boris.host.photos.contains_key(&id));
+    hand(&mut sent, &mut anya, &mut boris, false);
+    assert_eq!(boris.host.photos[&id], bytes);
+}
+
+#[test]
+fn a_photo_reaches_the_profiles_other_device() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, boris) = chatting();
+    let mut laptop = twin(&anya);
+    let boris_id = boris.host.keys.owner_id();
+    let bytes = jpeg(15_000);
+    let id = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":4,"height":3,"text":"Фото"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut sent = anya.effects();
+    hand(&mut sent, &mut anya, &mut laptop, false);
+    let copy = |m: &Machine<Memory>| {
+        m.engine
+            .outbox
+            .messages
+            .iter()
+            .find(|o| o.envelope.id == id)
+            .map(|o| o.photo_missing)
+    };
+    assert_eq!(copy(&laptop), Some(true), "shown as coming");
+    assert_eq!(hand(&mut sent, &mut anya, &mut laptop, true), 2);
+    assert_eq!(laptop.host.photos[&id], bytes);
+    assert_eq!(copy(&laptop), Some(false));
+}

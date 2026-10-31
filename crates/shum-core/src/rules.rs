@@ -276,6 +276,8 @@ pub struct ReceivedMessage {
     pub unread: bool,
     pub read: bool,
     pub hop_count: i64,
+    /// Its photo has not come together yet, so it is not acknowledged.
+    pub photo_missing: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InboundEffect {
@@ -534,12 +536,14 @@ impl Inbox {
             self.merge(&e.sender)?;
             let unread = self.foreground_contact.as_deref() != Some(e.sender.id().as_str());
             let id = e.id.clone();
+            let photo_missing = plain.photo.is_some();
             self.messages.push(ReceivedMessage {
                 envelope: e,
                 plaintext: plain,
                 unread,
                 read: !unread,
                 hop_count: hop,
+                photo_missing,
             });
             return Ok(InboundEffect::Accepted(id));
         }

@@ -540,29 +540,7 @@ impl Engine {
         let mut actions = vec![];
         match effect {
             InboundEffect::Accepted(id) | InboundEffect::RepeatReceipt(id) => {
-                self.keys(&c.keys)?;
-                if let Some(message) = self.inbox.messages.iter().find(|m| m.envelope.id == id) {
-                    let receipt = Receipt::create(
-                        &message.envelope,
-                        self.inbox.own.clone(),
-                        c.keys.signing,
-                        message.read,
-                        c.now,
-                    )?;
-                    self.outbox
-                        .apply_receipt(receipt.clone(), Some(&message.envelope), c.now)?;
-                    for peer in &c.routes.peers {
-                        if peer.card.id() == message.envelope.sender.id() {
-                            actions.push(Action::SendBle {
-                                peer: peer.routing.clone(),
-                                packet: Box::new(Packet {
-                                    receipt: Some(receipt.clone()),
-                                    ..Packet::default()
-                                }),
-                            });
-                        }
-                    }
-                }
+                actions.extend(self.acknowledge(&id, c)?);
             }
             InboundEffect::Invitation(effect) => {
                 if let Some(invitation) = invitation {
@@ -1083,6 +1061,66 @@ impl Engine {
     }
     /// An invitation sent or answered on another of this profile's devices:
     /// this device takes the same step, unless it already took a newer one.
+    /// The delivery receipt for received message `id`, unless its photo is
+    /// still coming: the sender keeps sending until the photo is here.
+    fn acknowledge(&mut self, id: &str, c: &Context<'_>) -> Result<Vec<Action>> {
+        self.keys(&c.keys)?;
+        let mut actions = vec![];
+        let Some(message) = self
+            .inbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == id && !m.photo_missing)
+        else {
+            return Ok(actions);
+        };
+        let receipt = Receipt::create(
+            &message.envelope,
+            self.inbox.own.clone(),
+            c.keys.signing,
+            message.read,
+            c.now,
+        )?;
+        self.outbox
+            .apply_receipt(receipt.clone(), Some(&message.envelope), c.now)?;
+        for peer in &c.routes.peers {
+            if peer.card.id() == message.envelope.sender.id() {
+                actions.push(Action::SendBle {
+                    peer: peer.routing.clone(),
+                    packet: Box::new(Packet {
+                        receipt: Some(receipt.clone()),
+                        ..Packet::default()
+                    }),
+                });
+            }
+        }
+        Ok(actions)
+    }
+    /// The photo of message `id` came together and is stored: a received
+    /// one is acknowledged now; a copy from another device just shows it.
+    pub fn photo_arrived(&mut self, id: &str, c: &Context<'_>) -> Result<Vec<Action>> {
+        if let Some(copy) = self
+            .outbox
+            .messages
+            .iter_mut()
+            .find(|m| m.envelope.id == id && m.photo_missing)
+        {
+            copy.photo_missing = false;
+            return Ok(vec![]);
+        }
+        let Some(message) = self
+            .inbox
+            .messages
+            .iter_mut()
+            .find(|m| m.envelope.id == id && m.photo_missing)
+        else {
+            return Ok(vec![]);
+        };
+        message.photo_missing = false;
+        let mut actions = self.acknowledge(id, c)?;
+        actions.extend(self.tick(c.routes, c.now));
+        Ok(actions)
+    }
     /// A message to someone is sent only once they are accepted, so one
     /// sent after this device's last invitation step with them, here or on
     /// another device of the profile, means they were accepted since. Fixes

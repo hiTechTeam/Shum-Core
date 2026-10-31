@@ -96,7 +96,11 @@ fn plain(v: &Value, e: &Envelope) -> Result<Plaintext> {
         } else {
             Some(decode(&v["reply"])?)
         },
-        photo: None,
+        photo: if v["photo"].is_null() {
+            None
+        } else {
+            Some(decode(&v["photo"])?)
+        },
     })
 }
 /// Rehydrates historical messages without treating their expired wire TTL as
@@ -185,6 +189,7 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
                 // Messages from before own copies existed are not sent again.
                 copied: row["ownCopySent"].as_bool().unwrap_or(true),
                 copy_offered: None,
+                photo_missing: row["photoMissing"].as_bool().unwrap_or(false),
             });
         } else {
             engine.inbox.messages.push(ReceivedMessage {
@@ -193,6 +198,7 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
                 unread: flag(&row["unread"])?,
                 read: status == Delivery::Read,
                 hop_count: row["hopCount"].as_i64().unwrap_or(0),
+                photo_missing: row["photoMissing"].as_bool().unwrap_or(false),
             });
         }
     }
@@ -505,6 +511,11 @@ pub fn project(previous: &Value, engine: &Engine, now: i64) -> Result<Value> {
         )?;
         row["unread"] = json!(message.unread);
         row["hopCount"] = json!(message.hop_count);
+        set_optional(
+            &mut row,
+            "photoMissing",
+            message.photo_missing.then_some(json!(true)),
+        );
         if row["attempts"].is_null() {
             put_retry(&mut row, &Retry::default(), true)?;
         }
@@ -524,6 +535,11 @@ pub fn project(previous: &Value, engine: &Engine, now: i64) -> Result<Value> {
             message.delivery.status,
         )?;
         put_retry(&mut row, &message.retry, true)?;
+        set_optional(
+            &mut row,
+            "photoMissing",
+            message.photo_missing.then_some(json!(true)),
+        );
         row["nostrAccepted"] = json!(message.delivery.nostr_accepted);
         row["nostrAttempts"] = json!(message.delivery.nostr_attempts);
         set_date(
@@ -681,6 +697,11 @@ fn put_message(
         row,
         "reply",
         plain.reply.as_ref().map(serde_json::to_value).transpose()?,
+    );
+    set_optional(
+        row,
+        "photo",
+        plain.photo.as_ref().map(serde_json::to_value).transpose()?,
     );
     Ok(())
 }

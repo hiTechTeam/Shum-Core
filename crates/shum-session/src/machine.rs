@@ -91,6 +91,12 @@ fn shown(people: &HashMap<String, (Card, i64)>) -> Vec<&Card> {
     cards
 }
 
+/// Parts of a photo that came before its message wait this long, this many.
+const EARLY_PART_MS: i64 = 3_600_000;
+const EARLY_PARTS: usize = 64;
+/// Photos being put together at once.
+const PHOTO_BUFFERS: usize = 16;
+
 /// Being in the open chat goes out again this often while it is on screen.
 const PUBLIC_PRESENCE_REPEAT_MS: i64 = 15_000;
 /// Someone shows as in the open chat this long after their last signal.
@@ -231,6 +237,10 @@ pub struct Machine<H: Host> {
     /// Sealed parts of photos this device sends, by message; rebuilt from
     /// the stored JPEG when not here.
     photo_parts: HashMap<String, Vec<PhotoPart>>,
+    /// Opened parts of photos coming in, by message, with when the first
+    /// came; and parts that came before their message.
+    photo_buffers: HashMap<String, (i64, HashMap<usize, Vec<u8>>)>,
+    early_parts: Vec<(i64, PhotoPart)>,
     pushed: HashSet<String>,
     lookups: HashMap<String, Lookup>,
     /// When each author's recent open-chat notes arrived, to drop floods.
@@ -277,6 +287,8 @@ impl<H: Host> Machine<H> {
             encounter_retention: crate::directory::DEFAULT_RETENTION_MS,
             inflight: HashSet::new(),
             photo_parts: HashMap::new(),
+            photo_buffers: HashMap::new(),
+            early_parts: Vec::new(),
             pushed: HashSet::new(),
             lookups: HashMap::new(),
             public_rate: HashMap::new(),
@@ -473,6 +485,122 @@ impl<H: Host> Machine<H> {
             }
         }
         out
+    }
+
+    /// The photo a part belongs to, if it is still missing here: of a
+    /// received message, or of one copied from another of this profile's
+    /// devices.
+    fn missing_photo(&self, id: &str) -> Option<Photo> {
+        if let Some(m) = self
+            .engine
+            .inbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == id)
+        {
+            return m.photo_missing.then(|| m.plaintext.photo.clone()).flatten();
+        }
+        self.engine
+            .outbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == id && m.photo_missing)?
+            .plaintext
+            .as_ref()?
+            .photo
+            .clone()
+    }
+
+    /// Opens a part with the key its message carries and stores the photo
+    /// once every part is in and the hash matches (protocol section 04.9).
+    fn take_photo_part(&mut self, part: PhotoPart) -> Result<()> {
+        if part.validate().is_err() {
+            return Ok(());
+        }
+        let time = now();
+        let id = part.message_id.clone();
+        let Some(photo) = self.missing_photo(&id) else {
+            // Its message may still be on the way.
+            let known = self
+                .engine
+                .inbox
+                .messages
+                .iter()
+                .any(|m| m.envelope.id == id)
+                || self
+                    .engine
+                    .outbox
+                    .messages
+                    .iter()
+                    .any(|m| m.envelope.id == id);
+            if !known {
+                self.early_parts.retain(|(at, _)| time - at < EARLY_PART_MS);
+                if self.early_parts.len() < EARLY_PARTS {
+                    self.early_parts.push((time, part));
+                }
+            }
+            return Ok(());
+        };
+        let Ok(bytes) = photo.open(&id, &part) else {
+            return Ok(());
+        };
+        if !self.photo_buffers.contains_key(&id) && self.photo_buffers.len() >= PHOTO_BUFFERS {
+            if let Some(oldest) = self
+                .photo_buffers
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(id, _)| id.clone())
+            {
+                self.photo_buffers.remove(&oldest);
+            }
+        }
+        let (_, parts) = self
+            .photo_buffers
+            .entry(id.clone())
+            .or_insert_with(|| (time, HashMap::new()));
+        parts.insert(part.index as usize, bytes);
+        if parts.len() < photo.count() {
+            return Ok(());
+        }
+        let (_, parts) = self.photo_buffers.remove(&id).expect("buffered");
+        let ordered: Option<Vec<_>> = (0..photo.count()).map(|i| parts.get(&i).cloned()).collect();
+        // A wrong hash drops every part; they come again.
+        let Some(jpeg) = ordered.and_then(|p| photo.join(&p).ok()) else {
+            return Ok(());
+        };
+        self.host.put_photo(&id, &jpeg)?;
+        self.apply(|e, c| e.photo_arrived(&id, c))?;
+        Ok(())
+    }
+
+    /// Parts that came before their message, now that a message came.
+    fn retry_early_parts(&mut self) -> Result<()> {
+        let time = now();
+        let early: Vec<_> = std::mem::take(&mut self.early_parts)
+            .into_iter()
+            .filter(|(at, _)| time - at < EARLY_PART_MS)
+            .collect();
+        for (at, part) in early {
+            let id = &part.message_id;
+            let known = self
+                .engine
+                .inbox
+                .messages
+                .iter()
+                .any(|m| m.envelope.id == *id)
+                || self
+                    .engine
+                    .outbox
+                    .messages
+                    .iter()
+                    .any(|m| m.envelope.id == *id);
+            if known {
+                self.take_photo_part(part)?;
+            } else {
+                self.early_parts.push((at, part));
+            }
+        }
+        Ok(())
     }
 
     fn dispatch(&mut self, actions: Vec<Action>) -> Result<()> {
@@ -1105,10 +1233,19 @@ impl<H: Host> Machine<H> {
             {
                 if encoded.len() <= 33000 {
                     if let Ok(bytes) = STANDARD.decode(encoded) {
-                        if let Ok(packet) = Packet::decode(&bytes) {
-                            self.apply(|e, c| {
-                                e.receive(packet, Source::Nostr(&message.sender), c)
-                            })?;
+                        if let Ok(mut packet) = Packet::decode(&bytes) {
+                            if let Some(part) = packet.photo_part.take() {
+                                self.take_photo_part(part)?;
+                            } else {
+                                let carries =
+                                    packet.envelope.is_some() || packet.own_copy.is_some();
+                                self.apply(|e, c| {
+                                    e.receive(packet, Source::Nostr(&message.sender), c)
+                                })?;
+                                if carries {
+                                    self.retry_early_parts()?;
+                                }
+                            }
                         }
                     }
                 }
@@ -1371,9 +1508,14 @@ impl<H: Host> Machine<H> {
                 noise,
                 packet,
             } => {
-                if self.nearby.get(&routing).is_some_and(|p| p.noise == noise)
+                if let Some(part) = packet.photo_part.clone() {
+                    if self.nearby.get(&routing).is_some_and(|p| p.noise == noise) {
+                        self.take_photo_part(part)?;
+                    }
+                } else if self.nearby.get(&routing).is_some_and(|p| p.noise == noise)
                     || packet.card.is_some()
                 {
+                    let carries = packet.envelope.is_some();
                     self.apply(|e, c| {
                         e.receive(
                             *packet,
@@ -1384,6 +1526,9 @@ impl<H: Host> Machine<H> {
                             c,
                         )
                     })?;
+                    if carries {
+                        self.retry_early_parts()?;
+                    }
                 }
             }
             // Blocked people stay visible: the open chat is not a private one.
