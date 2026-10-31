@@ -531,22 +531,16 @@ impl Engine {
                     }
                 }
             }
-            InboundEffect::Profile {
-                reply,
-                rebase_above,
-            } => {
+            InboundEffect::Profile { reply, adopt } => {
                 if let Some(sync) = sync {
                     if let Some(known) = &sync.known_recipient {
                         self.outbox.acknowledge_profile(&sync.sender, known)?;
                     }
-                    if let Some(revision) = rebase_above {
-                        self.update_profile(
-                            self.inbox.own.name.clone(),
-                            self.inbox.own.bio.clone(),
-                            self.inbox.own.avatar_seed,
-                            Some(revision),
-                            c,
-                        )?;
+                    // Another device of this profile edited it later: take its
+                    // version instead of answering with ours, or the two would
+                    // keep overriding each other.
+                    if let Some(own) = adopt {
+                        self.share_profile(*own, c)?;
                     }
                     if reply {
                         let peer = self.contact(&sync.sender.id(), false)?;
@@ -708,7 +702,6 @@ impl Engine {
         name: String,
         bio: String,
         seed: Option<u64>,
-        above: Option<u64>,
         c: &Context<'_>,
     ) -> Result<()> {
         self.live()?;
@@ -718,7 +711,6 @@ impl Engine {
             .own
             .profile_revision
             .unwrap_or(0)
-            .max(above.unwrap_or(0))
             .checked_add(1)
             .ok_or(Error::Invalid("profile revision overflow"))?;
         let own = Card::create(
@@ -730,6 +722,9 @@ impl Engine {
             seed,
             revision,
         )?;
+        self.share_profile(own, c)
+    }
+    fn share_profile(&mut self, own: Card, c: &Context<'_>) -> Result<()> {
         let mut profiles = vec![];
         for peer in self
             .inbox

@@ -291,7 +291,8 @@ pub enum InboundEffect {
     Card(Box<Card>),
     Profile {
         reply: bool,
-        rebase_above: Option<u64>,
+        /// A newer version of our own profile, signed on another device.
+        adopt: Option<Box<Card>>,
     },
 }
 
@@ -455,13 +456,13 @@ impl Inbox {
             {
                 return Ok(InboundEffect::Dropped);
             }
-            let rebase_above = if let Some(peer_own) = &sync.known_recipient {
+            let adopt = if let Some(peer_own) = &sync.known_recipient {
                 if !self.own_keys(peer_own) {
                     return Ok(InboundEffect::Dropped);
                 }
                 let preferred = peer_own.preferred(&self.own)?;
                 if preferred.profile_id()? != self.own.profile_id()? {
-                    peer_own.profile_revision
+                    Some(Box::new(peer_own.clone()))
                 } else {
                     None
                 }
@@ -471,7 +472,7 @@ impl Inbox {
             self.merge(&sync.sender)?;
             return Ok(InboundEffect::Profile {
                 reply: sync.requests_reply,
-                rebase_above,
+                adopt,
             });
         }
         if let Some(e) = packet.envelope {

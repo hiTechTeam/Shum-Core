@@ -762,3 +762,22 @@ fn the_open_chat_shows_who_has_it_open() {
     mesh(&mut anya, &mut boris);
     assert_eq!(present(&boris), vec!["Аня"]);
 }
+
+#[test]
+fn a_new_avatar_reaches_contacts() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let (anya_id, boris_id) = (anya.host.keys.owner_id(), boris.host.keys.owner_id());
+    let link = boris.engine.inbox.own.invitation().unwrap();
+    ok(&mut anya, json!({"command":"add","link":link}));
+    ok(&mut anya, json!({"command":"invite","contact":boris_id}));
+    relay(&mut anya, &mut boris);
+    ok(&mut boris, json!({"command":"accept","contact":anya_id}));
+    relay(&mut anya, &mut boris);
+    let seed_at_boris = |b: &Machine<Memory>| b.engine.inbox.contacts[&anya_id].avatar_seed;
+    for seed in [11u64, 22, 33] {
+        ok(&mut anya, json!({"command":"profile","seed":seed}));
+        relay(&mut anya, &mut boris);
+        assert_eq!(seed_at_boris(&boris), Some(seed));
+    }
+}

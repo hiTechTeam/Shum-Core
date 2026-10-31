@@ -735,7 +735,7 @@ impl<H: Host> Machine<H> {
                 let bio = bio.unwrap_or_else(|| own.bio.clone());
                 let seed = seed.or(own.avatar_seed);
                 self.apply(|e, c| {
-                    e.update_profile(name, bio, seed, None, c)?;
+                    e.update_profile(name, bio, seed, c)?;
                     Ok(e.tick(c.routes, c.now))
                 })?;
                 self.host.renamed()?;

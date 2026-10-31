@@ -280,7 +280,6 @@ fn typing_reaction_withdrawal_and_profile_are_authenticated() {
         "Новая Аня".into(),
         "новое bio".into(),
         Some(33),
-        None,
         &a.context(&routes, now + 4000, &id(10)),
     )
     .unwrap();
@@ -945,4 +944,70 @@ fn a_profile_on_two_devices_shares_invitation_answers() {
             &a.context(&routes, now + 6, &id(7)),
         )
         .is_err());
+}
+#[test]
+fn a_profile_on_two_devices_keeps_the_latest_edit() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = accepted(&a, &b);
+    let mut laptop = accepted(&a, &b);
+    let mut eb = accepted(&b, &a);
+    let mut n = 0;
+    let mut edit = |device: &mut Engine, other: &mut Engine, eb: &mut Engine, seed: u64| {
+        n += 10;
+        let t = now + n as i64 * 1000;
+        device
+            .update_profile(
+                "Аня".into(),
+                "".into(),
+                Some(seed),
+                &a.context(&routes, t, &id(n)),
+            )
+            .unwrap();
+        let sync = packet(&device.tick(&routes, t), |p| p.profile_sync.is_some());
+        let reply = eb
+            .receive(
+                sync,
+                Source::Nostr(&a.card.nostr_key),
+                &b.context(&routes, t + 1, &id(n + 1)),
+            )
+            .unwrap();
+        // The reply goes to every device of the profile, the stale one too.
+        let reply = packet(&reply, |p| p.profile_sync.is_some());
+        other
+            .receive(
+                reply,
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, t + 2, &id(n + 2)),
+            )
+            .unwrap();
+        // The stale device must not answer with its old avatar.
+        if let Some(sync) = other.tick(&routes, t + 3).iter().find_map(|x| match x {
+            Action::SendNostr { packet, .. } if packet.profile_sync.is_some() => {
+                Some(*packet.clone())
+            }
+            _ => None,
+        }) {
+            eb.receive(
+                sync,
+                Source::Nostr(&a.card.nostr_key),
+                &b.context(&routes, t + 4, &id(n + 3)),
+            )
+            .unwrap();
+        }
+    };
+    edit(&mut phone, &mut laptop, &mut eb, 33);
+    assert_eq!(laptop.inbox.own.avatar_seed, Some(33));
+    assert_eq!(eb.inbox.contacts[&a.card.id()].avatar_seed, Some(33));
+    edit(&mut laptop, &mut phone, &mut eb, 44);
+    edit(&mut phone, &mut laptop, &mut eb, 55);
+    assert_eq!(phone.inbox.own.avatar_seed, Some(55));
+    assert_eq!(laptop.inbox.own.avatar_seed, Some(55));
+    assert_eq!(eb.inbox.contacts[&a.card.id()].avatar_seed, Some(55));
+    assert_eq!(eb.inbox.contacts[&a.card.id()].profile_revision, Some(4));
 }
