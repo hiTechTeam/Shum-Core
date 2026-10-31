@@ -876,6 +876,74 @@ fn a_contact_typing_or_in_the_chat_tells_clients_to_redraw() {
     );
 }
 
+#[test]
+fn a_sent_message_is_deleted_here_or_at_the_contact_too() {
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let send = |anya: &mut Machine<Memory>, boris: &mut Machine<Memory>, text: &str| {
+        ok(
+            anya,
+            json!({"command":"send","contact":boris_id,"text":text}),
+        );
+        let id = anya
+            .engine
+            .outbox
+            .messages
+            .last()
+            .unwrap()
+            .envelope
+            .id
+            .clone();
+        relay(anya, boris);
+        id
+    };
+    let has = |m: &Machine<Memory>, id: &str| {
+        m.snapshot()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == id)
+    };
+    let mine = send(&mut anya, &mut boris, "Только у меня");
+    let both = send(&mut anya, &mut boris, "У обоих");
+    assert!(has(&boris, &mine) && has(&boris, &both), "delivered");
+
+    ok(&mut anya, json!({"command":"delete","message":mine}));
+    ok(
+        &mut anya,
+        json!({"command":"delete","message":both,"everyone":true}),
+    );
+    relay(&mut anya, &mut boris);
+    assert!(!has(&anya, &mine) && !has(&anya, &both));
+    assert!(has(&boris, &mine), "deleted only here");
+    assert!(!has(&boris, &both), "deleted at the contact too");
+}
+
+#[test]
+fn a_deleted_photo_leaves_storage_on_both_sides() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let bytes = jpeg(30_000);
+    let id = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":4,"height":3,"text":"Фото"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    relay(&mut anya, &mut boris);
+    assert_eq!(boris.host.photos[&id], bytes);
+    ok(
+        &mut anya,
+        json!({"command":"delete","message":id,"everyone":true}),
+    );
+    relay(&mut anya, &mut boris);
+    assert!(!anya.host.photos.contains_key(&id));
+    assert!(!boris.host.photos.contains_key(&id));
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

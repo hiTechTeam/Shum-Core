@@ -1416,8 +1416,6 @@ impl Engine {
         Ok(self.tick(c.routes, c.now))
     }
     pub fn cancel_sending(&mut self, message_id: &str, c: &Context<'_>) -> Result<Vec<Action>> {
-        self.live()?;
-        self.keys(&c.keys)?;
         let message = self
             .outbox
             .messages
@@ -1430,10 +1428,34 @@ impl Engine {
         ) {
             return Err(Error::Invalid("message already finished"));
         }
-        let left = message.retry.attempts > 0
-            || message.delivery.nostr_accepted
-            || message.delivery.last_nostr_attempt.is_some()
-            || !message.offered.is_empty();
+        self.delete_sent(message_id, true, c)
+    }
+    /// Deletes a sent message here and on this profile's other devices;
+    /// with `everyone`, the contact's copy goes too, delivered or not.
+    pub fn delete_sent(
+        &mut self,
+        message_id: &str,
+        everyone: bool,
+        c: &Context<'_>,
+    ) -> Result<Vec<Action>> {
+        self.live()?;
+        self.keys(&c.keys)?;
+        let message = self
+            .outbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == message_id)
+            .ok_or(Error::Invalid("unknown outgoing message"))?;
+        let expires = message.envelope.expires_at;
+        // The contact may hold it once it was delivered or went out at all.
+        let left = everyone
+            && (!matches!(
+                message.delivery.status,
+                Delivery::Queued | Delivery::Forwarding
+            ) || message.retry.attempts > 0
+                || message.delivery.nostr_accepted
+                || message.delivery.last_nostr_attempt.is_some()
+                || !message.offered.is_empty());
         // This profile's other devices hold it too.
         let shared = message.mirror || message.copied || message.copy_offered.is_some();
         if left || shared {
@@ -1477,6 +1499,8 @@ impl Engine {
                 });
             }
         }
+        // A late own copy must not bring it back.
+        self.inbox.deleted.insert(message_id.into(), expires);
         self.forget_outgoing(message_id);
         Ok(self.tick(c.routes, c.now))
     }

@@ -104,6 +104,24 @@ fn photo_view(photo: &Photo, missing: bool, expires_at: i64) -> Value {
     json!({"width":photo.width,"height":photo.height,"size":photo.size,"caption":photo.caption,"state":state})
 }
 
+/// Messages with a photo, sent or received.
+fn photo_ids(engine: &Engine) -> HashSet<String> {
+    let received = engine
+        .inbox
+        .messages
+        .iter()
+        .filter(|m| m.plaintext.photo.is_some());
+    let sent = engine
+        .outbox
+        .messages
+        .iter()
+        .filter(|m| m.plaintext.as_ref().is_some_and(|p| p.photo.is_some()));
+    received
+        .map(|m| m.envelope.id.clone())
+        .chain(sent.map(|m| m.envelope.id.clone()))
+        .collect()
+}
+
 /// Parts of a photo that came before its message wait this long, this many.
 const EARLY_PART_MS: i64 = 3_600_000;
 const EARLY_PARTS: usize = 64;
@@ -441,6 +459,7 @@ impl<H: Host> Machine<H> {
             routes: &routes,
             uuid: &id,
         };
+        let photos = photo_ids(&self.engine);
         let transition = self.engine.prepare(|engine| operation(engine, &context))?;
         // Invitation history and engine state become durable in one encrypted commit,
         // before any network action can be dispatched.
@@ -449,6 +468,13 @@ impl<H: Host> Machine<H> {
             crate::timeline::project(self.host.state(), &self.engine, &transition.state, clear);
         self.host.commit(next)?;
         self.engine = transition.state;
+        // A photo goes with its message: deleted, withdrawn, cleared or
+        // expired.
+        let kept = photo_ids(&self.engine);
+        for id in photos.difference(&kept) {
+            self.photo_parts.remove(id);
+            let _ = self.host.delete_photo(id);
+        }
         self.dispatch(transition.actions)
     }
 
@@ -1090,6 +1116,9 @@ impl<H: Host> Machine<H> {
                 self.apply(|e, c| e.toggle_reaction(&message, reaction, c))?
             }
             Request::Cancel { message } => self.apply(|e, c| e.cancel_sending(&message, c))?,
+            Request::Delete { message, everyone } => {
+                self.apply(|e, c| e.delete_sent(&message, everyone, c))?
+            }
             Request::Resend { message } => {
                 let ephemeral = secret()?;
                 self.apply(|e, c| e.resend(&message, &ephemeral, c))?;

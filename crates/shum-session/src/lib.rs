@@ -210,6 +210,13 @@ pub enum Request {
     Cancel {
         message: String,
     },
+    /// Deletes an own sent message on this profile's devices; with
+    /// `everyone`, at the contact too.
+    Delete {
+        message: String,
+        #[serde(default)]
+        everyone: bool,
+    },
     /// Sends an expired message again at the end of the chat.
     Resend {
         message: String,
