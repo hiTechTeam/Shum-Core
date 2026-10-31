@@ -18,6 +18,7 @@ use shum_core::{
     invitation::{self, Invitation},
     nostr::{self, WrapEntropy},
     packet::*,
+    photo::{Photo, PhotoPart},
     profile::Manifest,
     queue::{Action, Peer, PushKind, Routes},
     rules::Source,
@@ -227,6 +228,9 @@ pub struct Machine<H: Host> {
     /// How long encounters nearby stay listed; each client chooses.
     encounter_retention: i64,
     inflight: HashSet<String>,
+    /// Sealed parts of photos this device sends, by message; rebuilt from
+    /// the stored JPEG when not here.
+    photo_parts: HashMap<String, Vec<PhotoPart>>,
     pushed: HashSet<String>,
     lookups: HashMap<String, Lookup>,
     /// When each author's recent open-chat notes arrived, to drop floods.
@@ -272,6 +276,7 @@ impl<H: Host> Machine<H> {
             push,
             encounter_retention: crate::directory::DEFAULT_RETENTION_MS,
             inflight: HashSet::new(),
+            photo_parts: HashMap::new(),
             pushed: HashSet::new(),
             lookups: HashMap::new(),
             public_rate: HashMap::new(),
@@ -349,8 +354,17 @@ impl<H: Host> Machine<H> {
         operation: impl FnOnce(&mut Engine, &Context<'_>) -> shum_core::Result<Vec<Action>>,
         clear: Option<&str>,
     ) -> Result<()> {
+        self.apply_as(uuid()?, clear, operation)
+    }
+
+    /// Applies `operation` with `id` as the UUID of what it creates.
+    fn apply_as(
+        &mut self,
+        id: String,
+        clear: Option<&str>,
+        operation: impl FnOnce(&mut Engine, &Context<'_>) -> shum_core::Result<Vec<Action>>,
+    ) -> Result<()> {
         let routes = self.routes();
-        let id = uuid()?;
         let time = now();
         let keys = self.host.keys();
         let context = Context {
@@ -374,7 +388,95 @@ impl<H: Host> Machine<H> {
         self.dispatch(transition.actions)
     }
 
+    /// The sealed parts of the photo of message `id`, if this device sends
+    /// it and has the JPEG.
+    fn photo_parts(&mut self, id: &str) -> Option<Vec<PhotoPart>> {
+        if let Some(parts) = self.photo_parts.get(id) {
+            return Some(parts.clone());
+        }
+        let photo = self
+            .engine
+            .outbox
+            .messages
+            .iter()
+            .find(|m| m.envelope.id == id)?
+            .plaintext
+            .as_ref()?
+            .photo
+            .clone()?;
+        let jpeg = self.host.photo(id).ok()??;
+        let key = Secret32::new(photo.key.as_slice().try_into().ok()?);
+        let (sealed, parts) =
+            Photo::seal(id, &jpeg, photo.width, photo.height, photo.caption, &key).ok()?;
+        if sealed != photo {
+            return None;
+        }
+        if self.photo_parts.len() >= 16 {
+            self.photo_parts.clear();
+        }
+        self.photo_parts.insert(id.into(), parts.clone());
+        Some(parts)
+    }
+
+    /// A message with a photo is followed by its parts on the same way:
+    /// over Nostr to its recipient or the profile's own key, and over
+    /// Bluetooth only to the recipient itself, never to couriers.
+    fn with_photo_parts(&mut self, actions: Vec<Action>) -> Vec<Action> {
+        let mut out = Vec::with_capacity(actions.len());
+        for action in actions {
+            let parts = match &action {
+                Action::SendNostr {
+                    recipient, packet, ..
+                } => packet
+                    .envelope
+                    .as_ref()
+                    .or(packet.own_copy.as_ref().map(|c| &c.envelope))
+                    .map(|e| (e.id.clone(), Some(recipient.clone()), None)),
+                Action::SendBle { peer, packet } => packet
+                    .envelope
+                    .as_ref()
+                    .filter(|e| {
+                        self.nearby.values().any(|p| {
+                            p.direct
+                                && p.peer.routing == *peer
+                                && p.peer.card.id() == e.recipient.id()
+                        })
+                    })
+                    .map(|e| (e.id.clone(), None, Some(peer.clone()))),
+                _ => None,
+            };
+            out.push(action);
+            let Some((message, recipient, peer)) = parts else {
+                continue;
+            };
+            let Some(parts) = self.photo_parts(&message) else {
+                continue;
+            };
+            for part in parts {
+                let index = part.index;
+                let packet = Box::new(Packet {
+                    photo_part: Some(part),
+                    ..Packet::default()
+                });
+                if let Some(recipient) = &recipient {
+                    out.push(Action::SendNostr {
+                        operation: format!("photo-part:{}:{message}:{index}", recipient.id()),
+                        recipient: recipient.clone(),
+                        packet,
+                    });
+                } else if let Some(peer) = &peer {
+                    out.push(Action::SendBle {
+                        peer: peer.clone(),
+                        packet,
+                    });
+                }
+            }
+        }
+        out
+    }
+
     fn dispatch(&mut self, actions: Vec<Action>) -> Result<()> {
+        let actions = self.with_photo_parts(actions);
         for action in actions {
             match action {
                 Action::SendNostr {
@@ -636,6 +738,46 @@ impl<H: Host> Machine<H> {
                 }
                 let ephemeral = secret()?;
                 self.apply(|e, c| e.send(&id, &text, reply, &ephemeral, c))?;
+            }
+            Request::SendPhoto {
+                contact,
+                photo,
+                width,
+                height,
+                text,
+                caption,
+            } => {
+                let id = self.contact(&contact)?;
+                if self.engine.inbox.phase(&id) != shum_core::rules::Phase::Accepted {
+                    return Err(phase(self.engine.inbox.phase(&id)));
+                }
+                let jpeg = STANDARD
+                    .decode(photo)
+                    .map_err(|_| crate::text("Фото не прочитать"))?;
+                if jpeg.len() > shum_core::photo::MAX_SIZE {
+                    return Err(crate::text("Фото слишком большое"));
+                }
+                let (key, ephemeral) = (secret()?, secret()?);
+                let message = uuid()?;
+                // The JPEG is stored before the message exists, so its parts
+                // can always follow it.
+                self.host.put_photo(&message, &jpeg)?;
+                if let Err(error) = self.apply_as(message.clone(), None, |e, c| {
+                    e.send_photo(
+                        &id,
+                        &jpeg,
+                        (width, height),
+                        &text,
+                        caption,
+                        &key,
+                        &ephemeral,
+                        c,
+                    )
+                }) {
+                    let _ = self.host.delete_photo(&message);
+                    return Err(error);
+                }
+                return Ok(json!({ "id": message }));
             }
             Request::Broadcast { text: note, reply } => {
                 if shum_core::card::trim(&note).is_empty()

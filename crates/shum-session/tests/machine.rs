@@ -816,3 +816,96 @@ fn a_new_avatar_reaches_contacts() {
         assert_eq!(seed_at_boris(&boris), Some(seed));
     }
 }
+
+fn chatting() -> (Machine<Memory>, Machine<Memory>) {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let (anya_id, boris_id) = (anya.host.keys.owner_id(), boris.host.keys.owner_id());
+    let link = boris.engine.inbox.own.invitation().unwrap();
+    ok(&mut anya, json!({"command":"add","link":link}));
+    ok(&mut anya, json!({"command":"invite","contact":boris_id}));
+    relay(&mut anya, &mut boris);
+    ok(&mut boris, json!({"command":"accept","contact":anya_id}));
+    relay(&mut anya, &mut boris);
+    (anya, boris)
+}
+
+fn jpeg(size: usize) -> Vec<u8> {
+    let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
+    v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);
+    v
+}
+
+#[test]
+fn a_photo_leaves_with_its_parts_to_the_contact_and_the_own_devices() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let anya_id = anya.host.keys.owner_id();
+    let bytes = jpeg(30_000);
+    let sent = ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(&bytes),
+               "width":1280,"height":960,"text":"Фото"}),
+    );
+    let message = sent["id"].as_str().unwrap().to_owned();
+    assert_eq!(anya.host.photos[&message], bytes, "stored before it leaves");
+    let photo = anya
+        .engine
+        .outbox
+        .messages
+        .iter()
+        .find(|m| m.envelope.id == message)
+        .and_then(|m| m.plaintext.as_ref()?.photo.clone())
+        .expect("the message carries the photo");
+    assert_eq!((photo.size, photo.count()), (30_000, 3));
+    assert!(!photo.caption);
+
+    let operations: Vec<String> = anya
+        .effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::Publish { operation, .. } => operation,
+            _ => None,
+        })
+        .collect();
+    for to in [&boris_id, &anya_id] {
+        for index in 0..3 {
+            let op = format!("photo-part:{to}:{message}:{index}");
+            assert!(operations.contains(&op), "{op} in {operations:?}");
+        }
+    }
+    let _ = &mut boris;
+}
+
+#[test]
+fn a_photo_goes_to_a_contact_nearby_over_bluetooth_in_parts() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let (mut anya, boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let noise = boris.host.keys.noise.noise_public();
+    let routing = hex::encode(shum_core::wire::routing_id(&noise));
+    anya.nearby(shum_session::machine::Nearby::Peer {
+        routing: routing.clone(),
+        card: Box::new(boris.engine.inbox.own.clone()),
+        noise,
+        distance: Some(2),
+        direct: true,
+    })
+    .unwrap();
+    anya.effects();
+    ok(
+        &mut anya,
+        json!({"command":"send_photo","contact":boris_id,"photo":STANDARD.encode(jpeg(30_000)),
+               "width":10,"height":10,"text":"смотри","caption":true}),
+    );
+    let (mut messages, mut parts) = (0, 0);
+    for effect in anya.effects() {
+        if let Effect::SendBle { peer, packet } = effect {
+            assert_eq!(peer, routing, "only to Boris himself");
+            messages += usize::from(packet.envelope.is_some());
+            parts += usize::from(packet.photo_part.is_some());
+        }
+    }
+    assert_eq!((messages, parts), (1, 3));
+}

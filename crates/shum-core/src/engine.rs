@@ -4,6 +4,7 @@ use crate::{
     card::{self, Card},
     crypto::Secret32,
     packet::*,
+    photo::Photo,
     queue::*,
     rules::*,
     Error, Result,
@@ -129,6 +130,36 @@ impl Engine {
         ephemeral: &Secret32,
         c: &Context<'_>,
     ) -> Result<Vec<Action>> {
+        self.send_with(id, text, reply, None, ephemeral, c)
+    }
+    /// Sends a JPEG with `text`: the caption when `caption`, otherwise a
+    /// stand-in for clients without photos. `key` is fresh for every photo.
+    /// The caller stores the JPEG under `c.uuid` and sends its parts after
+    /// the message (protocol section 04.9).
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_photo(
+        &mut self,
+        id: &str,
+        jpeg: &[u8],
+        size: (i64, i64),
+        text: &str,
+        caption: bool,
+        key: &Secret32,
+        ephemeral: &Secret32,
+        c: &Context<'_>,
+    ) -> Result<Vec<Action>> {
+        let (photo, _) = Photo::seal(c.uuid, jpeg, size.0, size.1, caption, key)?;
+        self.send_with(id, text, None, Some(photo), ephemeral, c)
+    }
+    fn send_with(
+        &mut self,
+        id: &str,
+        text: &str,
+        reply: Option<Reply>,
+        photo: Option<Photo>,
+        ephemeral: &Secret32,
+        c: &Context<'_>,
+    ) -> Result<Vec<Action>> {
         self.keys(&c.keys)?;
         let peer = self.contact(id, true)?;
         let text = card::trim(text);
@@ -148,7 +179,7 @@ impl Engine {
                 .ok_or(Error::Invalid("time overflow"))?,
             text: text.into(),
             reply,
-            photo: None,
+            photo,
         };
         let envelope = Envelope::seal(
             self.inbox.own.clone(),
