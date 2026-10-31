@@ -104,6 +104,11 @@ fn photo_view(photo: &Photo, missing: bool, expires_at: i64) -> Value {
     json!({"width":photo.width,"height":photo.height,"size":photo.size,"caption":photo.caption,"state":state})
 }
 
+/// A sticker clients can draw: one Shum's sets have; otherwise its text shows.
+fn known_sticker(name: Option<&str>) -> Option<&'static str> {
+    shum_core::pool::sticker(name?).map(|s| s.id)
+}
+
 /// Messages with a photo, sent or received.
 fn photo_ids(engine: &Engine) -> HashSet<String> {
     let received = engine
@@ -825,10 +830,10 @@ impl<H: Host> Machine<H> {
         contacts.sort_by(by_name);
         let mut messages = vec![];
         for m in &self.engine.inbox.messages {
-            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply,"photo":m.plaintext.photo.as_ref().map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at))}));
+            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.sender.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.text,"outgoing":false,"status":if m.read{"read"}else{"delivered"},"reply":m.plaintext.reply,"photo":m.plaintext.photo.as_ref().map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at)),"sticker":known_sticker(m.plaintext.sticker.as_deref())}));
         }
         for m in &self.engine.outbox.messages {
-            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"nostrAccepted":m.delivery.nostr_accepted,"pushScheduled":m.push_sent,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone()),"photo":m.plaintext.as_ref().and_then(|p|p.photo.as_ref()).map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at))}));
+            messages.push(json!({"id":m.envelope.id,"contactID":m.envelope.recipient.id(),"timestamp":m.envelope.timestamp,"text":m.plaintext.as_ref().map(|p|p.text.as_str()).unwrap_or(""),"outgoing":true,"status":m.delivery.status,"nostrAccepted":m.delivery.nostr_accepted,"pushScheduled":m.push_sent,"reply":m.plaintext.as_ref().and_then(|p|p.reply.clone()),"photo":m.plaintext.as_ref().and_then(|p|p.photo.as_ref()).map(|p|photo_view(p,m.photo_missing,m.envelope.expires_at)),"sticker":known_sticker(m.plaintext.as_ref().and_then(|p|p.sticker.as_deref()))}));
         }
         messages.sort_by_key(|m| {
             (
@@ -966,6 +971,14 @@ impl<H: Host> Machine<H> {
                     .photo(&message)?
                     .ok_or_else(|| crate::text("Фото ещё не пришло"))?;
                 return Ok(json!({ "photo": STANDARD.encode(jpeg) }));
+            }
+            Request::SendSticker { contact, sticker } => {
+                let id = self.contact(&contact)?;
+                if self.engine.inbox.phase(&id) != shum_core::rules::Phase::Accepted {
+                    return Err(phase(self.engine.inbox.phase(&id)));
+                }
+                let ephemeral = secret()?;
+                self.apply(|e, c| e.send_sticker(&id, &sticker, &ephemeral, c))?;
             }
             Request::SendPhoto {
                 contact,

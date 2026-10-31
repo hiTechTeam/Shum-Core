@@ -998,6 +998,36 @@ fn starting_to_type_goes_out_once_more_soon_after() {
     assert_eq!(typing(&mut anya), 0, "only once");
 }
 
+#[test]
+fn a_sticker_arrives_with_its_words_for_older_clients() {
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    ok(
+        &mut anya,
+        json!({"command":"send_sticker","contact":boris_id,"sticker":"bunChay"}),
+    );
+    relay(&mut anya, &mut boris);
+    let messages = boris.snapshot()["messages"].clone();
+    let got = messages.as_array().unwrap().last().unwrap().clone();
+    assert_eq!(got["sticker"], "bunChay");
+    assert_eq!(got["text"], "☕ чай", "{got}");
+    let sent = anya.snapshot()["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(sent["sticker"], "bunChay");
+    let unknown: Request = serde_json::from_value(
+        json!({"command":"send_sticker","contact":boris_id,"sticker":"nothing"}),
+    )
+    .unwrap();
+    assert!(
+        matches!(anya.request(0, unknown), Some(Err(_))),
+        "an unknown sticker is refused"
+    );
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

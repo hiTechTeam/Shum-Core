@@ -120,6 +120,10 @@ pub struct Plaintext {
     pub reply: Option<Reply>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo: Option<crate::photo::Photo>,
+    /// A sticker by its name in Shum's sets; `text` holds its emoji and
+    /// word for clients that do not draw it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticker: Option<String>,
 }
 impl Plaintext {
     pub fn validate(&self, e: &Envelope) -> Result<()> {
@@ -147,6 +151,12 @@ impl Plaintext {
         }
         if let Some(photo) = &self.photo {
             photo.validate()?;
+        }
+        // A name this version does not know still arrives; its text shows.
+        if self.sticker.as_ref().is_some_and(|s| {
+            s.is_empty() || s.len() > 64 || !s.bytes().all(|b| b.is_ascii_alphanumeric())
+        }) {
+            return Err(Error::Invalid("sticker"));
         }
         Ok(())
     }

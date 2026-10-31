@@ -130,7 +130,20 @@ impl Engine {
         ephemeral: &Secret32,
         c: &Context<'_>,
     ) -> Result<Vec<Action>> {
-        self.send_with(id, text, reply, None, ephemeral, c)
+        self.send_with(id, text, reply, None, None, ephemeral, c)
+    }
+    /// Sends a sticker from Shum's sets; its emoji and word go as the text
+    /// for clients that do not draw it.
+    pub fn send_sticker(
+        &mut self,
+        id: &str,
+        sticker: &str,
+        ephemeral: &Secret32,
+        c: &Context<'_>,
+    ) -> Result<Vec<Action>> {
+        let known = crate::pool::sticker(sticker).ok_or(Error::Invalid("unknown sticker"))?;
+        let text = format!("{} {}", known.emoji, known.word);
+        self.send_with(id, &text, None, None, Some(known.id.into()), ephemeral, c)
     }
     /// Sends a JPEG with `text`: the caption when `caption`, otherwise a
     /// stand-in for clients without photos. `key` is fresh for every photo.
@@ -149,7 +162,7 @@ impl Engine {
         c: &Context<'_>,
     ) -> Result<Vec<Action>> {
         let (photo, _) = Photo::seal(c.uuid, jpeg, size.0, size.1, caption, key)?;
-        self.send_with(id, text, None, Some(photo), ephemeral, c)
+        self.send_with(id, text, None, Some(photo), None, ephemeral, c)
     }
     fn send_with(
         &mut self,
@@ -157,6 +170,7 @@ impl Engine {
         text: &str,
         reply: Option<Reply>,
         photo: Option<Photo>,
+        sticker: Option<String>,
         ephemeral: &Secret32,
         c: &Context<'_>,
     ) -> Result<Vec<Action>> {
@@ -180,6 +194,7 @@ impl Engine {
             text: text.into(),
             reply,
             photo,
+            sticker,
         };
         let envelope = Envelope::seal(
             self.inbox.own.clone(),
@@ -1542,7 +1557,16 @@ impl Engine {
             .clone()
             .ok_or(Error::Invalid("message text is not stored"))?;
         let id = message.envelope.recipient.id();
-        let actions = self.send(&id, &plaintext.text, plaintext.reply, ephemeral, c)?;
+        // A sticker stays a sticker; a photo goes again as its text only.
+        let actions = self.send_with(
+            &id,
+            &plaintext.text,
+            plaintext.reply,
+            None,
+            plaintext.sticker,
+            ephemeral,
+            c,
+        )?;
         self.outbox.messages.retain(|m| m.envelope.id != message_id);
         self.inbox.reactions.retain(|(id, _), _| id != message_id);
         Ok(actions)

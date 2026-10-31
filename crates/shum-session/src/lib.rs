@@ -153,6 +153,11 @@ pub enum Request {
         #[serde(default)]
         caption: bool,
     },
+    /// Sends a sticker from Shum's sets by its name.
+    SendSticker {
+        contact: String,
+        sticker: String,
+    },
     /// Writes to the open chat with everyone nearby over Bluetooth.
     Broadcast {
         text: String,

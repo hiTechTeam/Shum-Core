@@ -101,6 +101,7 @@ fn plain(v: &Value, e: &Envelope) -> Result<Plaintext> {
         } else {
             Some(decode(&v["photo"])?)
         },
+        sticker: v["sticker"].as_str().map(str::to_owned),
     })
 }
 /// Rehydrates historical messages without treating their expired wire TTL as
@@ -703,6 +704,7 @@ fn put_message(
         "photo",
         plain.photo.as_ref().map(serde_json::to_value).transpose()?,
     );
+    set_optional(row, "sticker", plain.sticker.clone().map(Value::String));
     Ok(())
 }
 /// Returns network actions only after the full state is durable.

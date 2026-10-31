@@ -139,7 +139,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "hand",
-        title: "Руки",
+        title: "Жесты",
         reactions: true,
         icon: Art { size: 16, colors: &[0x1A1410, 0xC9CED6, 0xF2BD73, 0xC98243], cells: ".....AA.AA...ABA..AAACCACCAAABA..ACCACCACCACCAA..ACCACCACCACCABA.ACCACCACCACCAAB.ACCACCACCACCA.AAACCCCCCCCCCCA..CCACCCCCCCCCCA..CCCCCCCCCCCCDA..ACCCCCCCCCCCDA...ACCCCCCCCCDA.....ACCCCCCCDA.......ACCCCCDA........ACCCCCDA.........AAAAAA......................" },
         stickers: &[
@@ -243,7 +243,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "emoji",
-        title: "Эмодзи",
+        title: "Символы",
         reactions: true,
         icon: Art { size: 16, colors: &[0x1A1410, 0xA3AABB, 0xFF7AA0, 0x7D8497, 0x8FE36B, 0x24150B, 0xFFFFFF], cells: "...................A........A.....ABA......ABA....ABBA....ABBA....ABCBAAAABCBA....ABBBBBBBBBBA...ABBBBDBBDBBBBA..ABBBBBBBBBBBBA..ABBEFBBBBEFBBA..ABBEFBBBBEFBBA..GGBBBBCCBBBBGG..ABBBBGGGGBBBBA...ABBBGFFGBBBA.....ADDDDDDDDA.......AAAAAAAA...................." },
         stickers: &[
@@ -347,7 +347,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "hero",
-        title: "Герои",
+        title: "Существа",
         reactions: true,
         icon: Art { size: 16, colors: &[0x1A1410, 0xFFFFFF, 0x24150B, 0xC9CED6, 0xFF9A9C], cells: ".....AAAAA..........ABBBBBA........ABBBBBBBA......ABBBBBBBBBA.....ABBCCBBCCBDA....ABBCCBBCCBDA....ABBBBBBBBBDA....ABEBBCCBBEDA....ABBBBCCBBBDA....ABBBBBBBBBDA....ABBBBBBBBBDA....ABBDBBBDBBDA....ABAABBAABBA......A..AA..AA...................................." },
         stickers: &[
@@ -451,7 +451,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "scene",
-        title: "Сценарии",
+        title: "Занятия",
         reactions: true,
         icon: Art { size: 16, colors: &[0x1A1410, 0x6B7380, 0xC9CED6, 0x24150B, 0xFF4245, 0x30D158, 0x5AC8FA, 0xFFC93C], cells: "...................................AAAAAAAAAA.....ABBBBBBBBBBA...ABCCCCCCCCCCBA.ABCCDCCCCCCEEBA.ABCDDDCCCCFCCGBAABCCDCCCCCCHHBA.ABCCCCCBBCCCCCBAABCCCCBAABCCCCBA.ABBBBA..ABBBBA...AAAA....AAAA.................................................................." },
         stickers: &[
@@ -555,7 +555,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "crab",
-        title: "Розовый крабик",
+        title: "Крабик Пинки",
         reactions: true,
         icon: Art { size: 32, colors: &[0x5A1838, 0xFFE3EC, 0xFFB3C9, 0xE8608E, 0xFF86AB, 0xC2416E, 0xFFFFFF, 0x2A0B1A, 0xFF4F80], cells: "...................................................................A..A..................A..A.....AB..AA................AA..AA...ABA.ACDA..............AEDA.ADA..ACEACEDA..............AEEEAEDA..ADECEEDA..............ADEEEEDA..AFDDEEFA..............AFEEDDFA...AFFDDA................AEDFFA.....AAFA..................AFAA........AFA................AFA...........ACAAAAAAAAAAAAAAAADA.............ACCCCCCCCCCCCEEEDA.............ACEBBEEEEEEEEEEEEEDA...........ACEBEEEEEEEEEEEEEEEEDA.........ACEEEEEEEEEEEEEEEEEEEEDA.......ACEEEEEEEEEEEEEEEEEEEEEEDA......ACEEEEEEEEEEEEEEEEEEEEEEDA......ACEEEEEEGHEEEEEEGHEEEEEEDA......ACEEEEEEHHEEEEEEHHEEEEEEDA......ACEEEEEEEEEEEEEEEEEEEEEEDA......ADEEEIIEEEEEEEEEEEEIIEEEDA......AFDEEEEEEEEHEEHEEEEEEEEDFA.......AFDEEEEEEEEHHEEEEEEEEDFA.......A.AFDDEEEEEEEEEEEEEEDDFA.A.....A...AFFDDDDDDDDDDDDDDFFA...A...A...A.AAFFFFFFFFFFFFFFAA.A...A.....A...AAAAAAAAAAAAAAAA...A.......A...A................A...A.........A..................A......................................................................" },
         stickers: &[
@@ -659,7 +659,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "cat",
-        title: "Котик",
+        title: "Котик Барсик",
         reactions: true,
         icon: Art { size: 32, colors: &[0x232634, 0xC7CCD8, 0x7D8497, 0xA3AABB, 0xFF9FB3, 0x5F6577, 0xEEF0F6, 0x6B7183, 0xFFFFFF, 0x1B1D26, 0x8FE36B, 0xE4E7EF, 0xFF7F9A], cells: "........................................................................A..............A................AA............AA...............ABCA..........ADCA..............ABDCA........ADDCA..............AEEDCA......ADDEEA.............ABEEECFAAAAAAFCEEECA............ACEEAAAABBBBAAAAEECA............AFAAGGBBDHHDBBDDAAFA...........AAABGDDHDDHHDDHDDDCAAA..........AABDDDDDHDDDDHDDDDDCAA...........ABDDIJKDDDDDDIJKDDCA............ABDDKJKDDDDDDKJKDDCA............ABDDKJKDDDDDDKJKDDCA............ABDDDDDDDDDDDDDDDDCA........GG..ACDDDDDDLGMLDDDDDDCA..GG......GGAFCDDDLLLMMLLLDDDCFAGG...........AFCCDLJLJJLJLDCCFA.........GGGG..AFFCLLJLLJLLCFFA.AGGGG...........AAFFLLLLLLFFAA..ACA...............AAAAAAAAAA....HHA..................AAAA.......ACH................AABBBBAA.....ACA...............ABBDDDDBCA....ACA..............ABDDDDDDDDCA...ACCA.............ABDDDDDDDDCA.AACFFA.............ACDDDDDDDDDDACFFAA..............AFCCCCCCCCCCFFAA.................AFFFFFFFFFFAA....................BBAAAABBAA.........................................." },
         stickers: &[
@@ -739,7 +739,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "bun",
-        title: "Булочки",
+        title: "Булочка Бриошь",
         reactions: true,
         icon: Art { size: 32, colors: &[0x3A2211, 0xF2BD73, 0xE09A4C, 0xFDE3AB, 0xB86F2C, 0xFFFFFF, 0x24150B, 0xF28B82, 0x8C4F1F], cells: "............................................................................................................................................AAAAAAAA.....................AAABBBBBBBBAAA................AABBBCCCCCCCCCCCAA.............ABBCCCCCCCCCDCCCCCEA...........ABCCDDCCCDCCDECCCDCCEA.........ABCCDDCCCDECDECCCDECCCEA.......ABCCCCCCCDECCECCCDECCCCCEA......ABCCCCCCCECCCCCCCECCCCCCEA.....ABCCCCCCCCCCCCCCCCCCCCCCCCEA....ABCCCCCCCCCCCCCCCCCCCCCCCCEA....ABCCCCCCCCCCCCCCCCCCCCCCCCEA....ABCCCCCCCCCCCCCCCCCCCCCCCCEA....ABCCCCCCCFGCCCCCCFGCCCCCCCEA....ABCCCCCCCGGCCCCCCGGCCCCCCCEA....ABCCCCCCCCCCCCCCCCCCCCCCCCEA....ABCCCCHHCCCCCCCCCCCCHHCCCCEA....ABCCCCCCCCCCGCCGCCCCCCCCCCEA....ABCCCCCCCCCCCGGCCCCCCCCCCCEA....AECCCCCCCCCCCCCCCCCCCCCCCCEA.....AEECCCCCCCCCCCCCCCCCCCCEEA......AIIEEEEEEEEEEEEEEEEEEEEIIA.......AAIIIIIIIIIIIIIIIIIIIIAA..........AAAAAAAAAAAAAAAAAAAA......................................................................................................................................................................" },
         stickers: &[
@@ -819,7 +819,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "frog",
-        title: "Лягушка",
+        title: "Лягушка Кваки",
         reactions: true,
         icon: Art { size: 32, colors: &[0x1D3A14, 0xA6E57F, 0xFFFFFF, 0x5AA845, 0x7CCF5A, 0x14200E, 0x3F8034, 0xFF9FB3, 0xE8F5C8], cells: ".......................................................................................................................................................................................................................................AAAAA........AAAAA.............ABCCCDA......AECCCDA...........ABCCCCCDA....ABCCCCCDA..........ABCCFCCDA....ABCCFCCDA..........ADCFFCCDA....ABCFFCCDA..........AGCCCCCDA....ABCCCCCGA...........AGCCCEEEAAAAEEECCCGA.............ABEEEEEBBBBEEEEEDA...............ABEEEEEEEEEEEEDA...............ABEEEEEEEEEEEEEEDA.............ABEEEEEEEEEEEEEEEEDA...........AHHEEFEEEEEEEEEEEFEHHA..........ABEEEEFFFFFFFFFFFEEEDA.........ABEEEEEEEEIIIIEEEEEEEEDA........ABEEEEEIIIIIIIIIIEEEEEDA........ADEEEEIIIIIIIIIIIIEEEEDA.......AAADEEIIIIIIIIIIIIIIEEDAAA.....ABBAGDEIIIIIIIIIIIIIIEDGAEDA...ABEEEAGDIIIIIIIIIIIIIIDGAEEEDA..ADEEEEAGIIIIIIIIIIIIIIGAEEEEDA..AGDDDDDAAIIIIIIIIIIIIAADDDDDGA...AGGGGGA.AAIIIIIIIIAA.AGGGGGA.....AAAAA.AAAAAAAAAAAAAA.AAAAA............AGGGA....AGGGA...................AAA......AAA.........." },
         stickers: &[
@@ -899,7 +899,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "puppy",
-        title: "Щеночек",
+        title: "Щенок Бублик",
         reactions: true,
         icon: Art { size: 32, colors: &[0x3A2414, 0xFFF0D6, 0xF6CD93, 0xE8A964, 0xC27A3D, 0xA5622F, 0xC98243, 0xFFFFFF, 0x1F140C, 0xFFF3E2, 0x2A1A12, 0x6B5045, 0xA0602E, 0x7A4220, 0xF0D6B5, 0x5E2312, 0x140C06], cells: "...........................................................................................................................................................................................................AAAAAAAAAA.................AA.AABBCCCCCCCDAA.AA...........AEFACBDDDDDDDDDDDGAFFA.........AEFACBDDDDDDDDDDDDDGAFFA.......AEFFACDDDDDDDDDDDDDDGAFFFA......AEFACDDDDDDDDDDDDDDDDGAFFA......AEFACDDHIIDDDDDDHIIDDGAFHA.....AEFFACDDIIIDDDDDDIIIDDGAHFFA....AEFFACDDIIIDJJJJDIIIDDGHFFFA....AEFFAGDDDDJJKLKKJJDDDDGAFFFA....AEFFFAGDDJJJJKKJJJJDDGAFFFFA....AEFFFAMGGJJIIIIIIJJGGMAHHHFA....AFFFNAAMMOJIPPPPIJOMMAANFFFA.....ANNA..AAMOJIPPIJOMAA..ANNA......AAA.....AAAOIIOAAA....HAAA.................AAAA........H................................H............................................QQQQQQQQQQQQQQQ.................QHHHHQQHHQQHHHQQ................QHQQQQHQQHQHQQHQ................QHQ..QHHHHQHHHQQ................QHQ..QHQQHQHQQHQ................QHQ..QHQQHQHHHQQ................QQQ..QQQQQQQQQQ........................................." },
         stickers: &[
@@ -979,7 +979,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "alien",
-        title: "Пришельцы",
+        title: "Пришелец Зиг",
         reactions: true,
         icon: Art { size: 32, colors: &[0xFFD23F, 0xFFFFFF, 0x173A1F, 0xB3F2B8, 0xE6FFE8, 0x80E08B, 0x5CC16A, 0x101418, 0xC9CED6, 0x3F9A4C, 0xFF8FA3, 0x4A1A24, 0xF0646A], cells: "..........A..........A...................ABA........ABA...................AC........CA......................C......C........................CCCCCCCC......................CCDDDDDDDDCC..................CCDEEFFFFFFFFFCC...............CDDEFFFFFFFFFFFFGC..............CDEFFFFFFFFFFFFFGC.............CDFFFFFFFFFFFFFFFFGC............CDFFFFFFFFFFFFFFFFGC............CDFFFFFFFFFFFFFFFFGC............CDFFFFFFFFFFFFFFFFGC............CDFFFHHFFFFFFHHFFFGC............CGFFHFFHFFFFHFFHFFGC..I.........CJGFFFFFFFFFFFFFFGJC...I.........CJGGFFFFFFFFFFGGJC...............CKKGGHHHHHHGGKKC.C...............CCJJHLLLLHJJCC.CC..I..............CCCHMMHCCC..CC....I................CHHC....CC.....................CCCCCC..CC.....................CDDDDDGC.C...................CCCDFFFFFFGC...................CCGDFFFFFFFFGC..................C.CDFFFDDFFFGC....................CGFFDDDDFFGC.....................CDFGGGGFGC......................CGGJJJJGGC.......................CJCCCCJC.......................CCC....CCC..........................................." },
         stickers: &[
@@ -1059,7 +1059,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "robot",
-        title: "Роботы",
+        title: "Робот Бип",
         reactions: true,
         icon: Art { size: 32, colors: &[0xFFD23F, 0xFFFFFF, 0x1D2433, 0xF2F6FB, 0xD3DCEA, 0xA9B6CC, 0x7D8BA3, 0x131A24, 0x2A3A4F, 0x5DF5E8, 0x55627A, 0xC9CED6, 0xFF4F5E, 0x5DF58A], cells: ".............A.BA.A.........................A..AA..A...........................CC.............................ACCA.......................CCCCCCCCCCCCCC................CCDDEEEEEEEEEFFFCC..............CDFFFFFFFFFFFFFFGC.............CEFHHHHHHHHHHHHHHFGC............CEHIIHHHHHHHHHHHHHGC............CEHIHHHHHHHHHHHHHHGC..........CCFFHHHHHHHHHHHHHHHHFFCC........CGFFHHHJJHHHHHHJJHHHFFGC........CKFFHHJHHJHHHHJHHJHHFFKC........CCFFHHHHHHHHHHHHHHHHFFCC..........CEHHHHHJJJJJJHHHHHGC...L........CEHHHHHHJJJJHHHHHHGC....L.......CGHHHHHHHJJHHHHHHHGCC............CKHHHHHHHHHHHHHHKCCC............CCKKKKKKKKKKKKKKCCC...L...........CCCCCCCCCCCCCC.CC....L...............CCCC.....CC..................CCCCCCCCCC..C...............CC.CEEEEEEEEEGC.................CCCEFFHHHHHHFFGC...............CC.CEFFHMHANHFFGC...............CC.CGFFHHHHHHFFGC..................CKFFGGGGGGFFKC...................CEFKKKKKKFGC.....................CGCCCCCCGC......................CC......CC.....................CCC......CCC.........................................." },
         stickers: &[
@@ -1139,7 +1139,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "people",
-        title: "Человечки",
+        title: "Пиксель и друзья",
         reactions: true,
         icon: Art { size: 32, colors: &[0xC9CED6, 0x231A1A, 0x272224, 0x221E20, 0x1D191B, 0x171416, 0xF5C69C, 0xCEA683, 0xFFE2B2, 0xA7876A, 0xF28B82, 0x5E2312, 0xF0646A, 0x120C0C, 0xFFFFFF], cells: ".........................................................................................................................A....................BBBB......A..................BBBCCCCBBB.....................BCCCDDDDCCEB...................BEEEEEEEEEEEEB..BBBB...........BCFFFFFFFFFFFFEBBGHGHB.A.......BCDBBBBBBBBBBBBDEBGHGHB.A.......BEBIGGGGGGGGGGHBEBGGGHB.........BFBGGGGGGGGGGGGBBHGGGHB.........BBBGGGGGGGGGGGGBJJHHHHB........BHBIGBBGGGGGGBBGHBBJJJJB.A......BHBIBGGBGGGGBGGBHBHBBBB..A......BJBIGGGGGGGGGGGGHBJB............BBKKGGGGGGGGGGGGKKBB...............BHGGBBBBBBGGHB..................BJHGBLLLLBGHJB...................BJHHBMMBHHJB.....................BJJJBBJJJB.......................BBBJJBBB...........................BB................................................NNNNNNNNNNNNNNNNNNNNNNNNNNNNNN..NOOOONOOONNONNONOOONNOOOONOOON..NONNONONNONONNONONNONONNNNNONN..NONNONOOONNONOONOOONNOOON.NON...NONNONONNNNOONONONNONONNNNNON...NONNONON..NONNONOOONNOOOONNON...NNNNNNNN..NNNNNNNNNNNNNNNNNNN.................................." },
         stickers: &[
@@ -1323,7 +1323,7 @@ pub static SETS: &[Set] = &[
     },
     Set {
         id: "nearby",
-        title: "Рядом",
+        title: "Встречи",
         reactions: false,
         icon: Art { size: 32, colors: &[0x14201A, 0x5DF58A, 0xC4FFD6, 0x2FA85A, 0xFFFFFF, 0x131A24, 0x0C1410], cells: ".............................................AAAAAA.........................ABBBBBBA...................B...ABCBBBBBDA...B.............B...ABCBEEEEBBDA...B............B..BABBEEEEEEBDAB..B............B.B.ABBEEFFEEBDA.B.B............B..BABBEEFFEEBDAB..B............B...ABBEEEEEEBDA...B.............B...ABBEEEEBDA...B..................ABBBBBBBDA.......................ABBBBBDA.........................ABBBBA...........................ABBA.............................AA.............................................................................................................................GGGGG..........................GGEEEG..........................GEGGEG..........................GGEEEG..........................GGEGEG..........................GEGGEG...............GGGGG.GGGGGGGGGGGGGGGGGG.GGG....GEEEGGGEEEGGEEEGGGEEGGEGGGEG....GEGGEGEGGEGGEGEGGEGGEGEEGEEG....GEEEGGGEEEGGEGEGGEGGEGEGEGEG....GEGGGGGEGEGEEEEEGEGGEGEGGGEG....GEG..GEGGEGEGGGEGGEEGGEG.GEG....GGG..GGGGGGGG.GGGGGGGGGG.GGG.................................." },
         stickers: &[
