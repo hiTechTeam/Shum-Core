@@ -764,6 +764,27 @@ fn the_open_chat_shows_who_has_it_open() {
 }
 
 #[test]
+fn people_with_one_name_in_the_open_chat_keep_their_order() {
+    let mut first = profile("Пупок");
+    let mut second = profile("Пупок");
+    let mut boris = profile("Борис");
+    for anya in [&mut first, &mut second] {
+        ok(anya, json!({"command":"public_presence","online":true}));
+        mesh(anya, &mut boris);
+    }
+    let ids: Vec<String> = boris.snapshot()["publicPresent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| serde_json::from_value::<Card>(c.clone()).unwrap().id())
+        .collect();
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids, sorted);
+}
+
+#[test]
 fn a_new_avatar_reaches_contacts() {
     let mut anya = profile("Аня");
     let mut boris = profile("Борис");

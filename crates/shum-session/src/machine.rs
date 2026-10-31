@@ -66,6 +66,19 @@ fn by_name(a: &Value, b: &Value) -> std::cmp::Ordering {
     key(a).cmp(&key(b))
 }
 
+/// Who is still shown in the open chat, by name and then by ID like the
+/// other lists, so people with one name do not swap places.
+fn shown(people: &HashMap<String, (Card, i64)>) -> Vec<&Card> {
+    let now = now();
+    let mut cards: Vec<&Card> = people
+        .values()
+        .filter(|(_, until)| *until > now)
+        .map(|(card, _)| card)
+        .collect();
+    cards.sort_by_cached_key(|c| (c.name.clone(), c.id()));
+    cards
+}
+
 /// Being in the open chat goes out again this often while it is on screen.
 const PUBLIC_PRESENCE_REPEAT_MS: i64 = 15_000;
 /// Someone shows as in the open chat this long after their last signal.
@@ -501,7 +514,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(by_name);
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicPresent":self.public_present.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"publicTyping":self.public_typing.values().filter(|(_,until)|*until>now()).map(|(card,_)|card).collect::<Vec<_>>(),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicPresent":shown(&self.public_present),"publicTyping":shown(&self.public_typing),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
