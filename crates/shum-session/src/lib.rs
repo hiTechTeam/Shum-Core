@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use shum_core::packet::ReactionKind;
 
 /// Version of the [`Request`] API. Clients compare it with a running session.
-pub const COMMAND_SCHEMA_VERSION: u64 = 4;
+pub const COMMAND_SCHEMA_VERSION: u64 = 5;
 
 /// Why a request failed, in a form each client can present in its own words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
