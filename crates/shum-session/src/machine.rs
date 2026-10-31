@@ -736,8 +736,8 @@ impl<H: Host> Machine<H> {
             }
             Request::Block { contact, blocked } => {
                 let id = self.contact(&contact)?;
-                self.apply(|e, _| {
-                    e.block(&id, blocked)?;
+                self.apply(|e, c| {
+                    e.block(&id, blocked, c.now)?;
                     Ok(vec![])
                 })?;
             }

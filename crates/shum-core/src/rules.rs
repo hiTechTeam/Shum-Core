@@ -304,6 +304,9 @@ pub struct Inbox {
     pub contacts: HashMap<String, Card>,
     pub blocked: HashSet<String>,
     pub blocked_cards: HashMap<String, Card>,
+    /// When each contact was last blocked or unblocked, so the profile's
+    /// devices agree on the newer decision.
+    pub block_decisions: HashMap<String, i64>,
     pub deleted: HashMap<String, i64>,
     pub messages: Vec<ReceivedMessage>,
     pub invitations: HashMap<String, InvitationState>,
@@ -322,6 +325,7 @@ impl Inbox {
             contacts: HashMap::new(),
             blocked: HashSet::new(),
             blocked_cards: HashMap::new(),
+            block_decisions: HashMap::new(),
             deleted: HashMap::new(),
             messages: vec![],
             invitations: HashMap::new(),
@@ -346,7 +350,7 @@ impl Inbox {
             |v| v.phase,
         )
     }
-    fn own_keys(&self, card: &Card) -> bool {
+    pub(crate) fn own_keys(&self, card: &Card) -> bool {
         self.own.noise_key == card.noise_key
             && self.own.signing_key == card.signing_key
             && self.own.nostr_key == card.nostr_key
@@ -358,7 +362,7 @@ impl Inbox {
                 && c.nostr_key == card.nostr_key
         })
     }
-    fn merge(&mut self, card: &Card) -> Result<()> {
+    pub(crate) fn merge(&mut self, card: &Card) -> Result<()> {
         if let Some(previous) = self.requests.get(&card.id()) {
             let next = card.preferred(previous)?.clone();
             self.requests.insert(card.id(), next);

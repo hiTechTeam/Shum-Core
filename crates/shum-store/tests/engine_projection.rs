@@ -140,3 +140,31 @@ fn copies_for_own_devices_survive_a_restart() {
         state["ownOutbox"]
     );
 }
+
+#[test]
+fn block_decisions_survive_a_restart() {
+    let noise = Secret32::new([1; 32]);
+    let signing = Secret32::new([2; 32]);
+    let nostr = Secret32::new([3; 32]);
+    let own = Card::create(&noise, &signing, &nostr, "Alice".into(), "", None, 1).unwrap();
+    let peer = Card::create(
+        &Secret32::new([11; 32]),
+        &Secret32::new([12; 32]),
+        &Secret32::new([13; 32]),
+        "Bob".into(),
+        "",
+        None,
+        1,
+    )
+    .unwrap();
+    let now = 1_800_000_000_000;
+    let mut engine = Engine::new(own.clone()).unwrap();
+    engine.add_contact(peer.clone()).unwrap();
+    engine.block(&peer.id(), true, now).unwrap();
+    engine.block(&peer.id(), false, now + 5_000).unwrap();
+    let state = json!({"version":1,"ownerID":own.id(),"ownProfileCard":own});
+    let state = project(&state, &engine, now).unwrap();
+    let restored = restore(&state, &signing).unwrap();
+    assert_eq!(restored.inbox.block_decisions[&peer.id()], now + 5_000);
+    assert!(!restored.inbox.blocked.contains(&peer.id()));
+}

@@ -200,7 +200,7 @@ fn tentative_transition_and_blocking_do_not_send_before_commit() {
         .is_err());
     assert!(ea.outbox.messages.is_empty());
     let mut next = prepared.state;
-    next.block(&b.card.id(), true).unwrap();
+    next.block(&b.card.id(), true, now).unwrap();
     assert_eq!(next.outbox.messages[0].delivery.status, Delivery::Cancelled);
     assert!(next.tick(&routes, now + 10000).is_empty());
     next.retire();
@@ -1097,4 +1097,106 @@ fn a_message_sent_from_another_device_settles_a_missed_answer() {
         )
         .unwrap();
     assert!(laptop.inbox.messages.iter().any(|m| m.envelope.id == id(7)));
+}
+fn own_state(actions: &[Action]) -> Vec<Packet> {
+    actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::SendNostr { packet, .. } if packet.own_state.is_some() => Some(*packet.clone()),
+            _ => None,
+        })
+        .collect()
+}
+#[test]
+fn a_profile_on_two_devices_shares_its_state() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = accepted(&a, &b);
+    let mut laptop = Engine::new(a.card.clone()).unwrap();
+    let deliver = |from: &mut Engine, to: &mut Engine, at: i64| -> usize {
+        let pages = own_state(&from.tick(&routes, at));
+        for page in &pages {
+            to.receive(
+                page.clone(),
+                Source::Nostr(&a.card.nostr_key),
+                &a.context(&routes, at, &id(90)),
+            )
+            .unwrap();
+        }
+        pages.len()
+    };
+
+    // The laptop never saw Igor; the phone's state brings him, accepted.
+    assert_eq!(
+        deliver(&mut phone, &mut laptop, now),
+        1,
+        "sent when starting"
+    );
+    assert_eq!(laptop.inbox.phase(&b.card.id()), Phase::Accepted);
+    assert!(laptop.inbox.contacts.contains_key(&b.card.id()));
+    // Nothing new: nothing goes out until the hour is up.
+    assert_eq!(deliver(&mut phone, &mut laptop, now + 60_000), 0);
+    assert_eq!(deliver(&mut phone, &mut laptop, now + 3_600_000), 1);
+
+    // A block goes out a few seconds after it, not at once.
+    phone.block(&b.card.id(), true, now + 4_000_000).unwrap();
+    assert_eq!(deliver(&mut phone, &mut laptop, now + 4_000_001), 0);
+    assert_eq!(deliver(&mut phone, &mut laptop, now + 4_006_000), 1);
+    assert!(laptop.inbox.blocked.contains(&b.card.id()));
+    assert_eq!(
+        deliver(&mut laptop, &mut phone, now + 4_007_000),
+        1,
+        "its first tick"
+    );
+
+    // The laptop unblocks later; the phone's older word does not undo it.
+    let stale = own_state(&phone.clone().tick(&routes, now + 8_000_000));
+    assert_eq!(stale.len(), 1);
+    laptop.block(&b.card.id(), false, now + 5_000_000).unwrap();
+    laptop
+        .receive(
+            stale[0].clone(),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 5_000_001, &id(91)),
+        )
+        .unwrap();
+    assert!(!laptop.inbox.blocked.contains(&b.card.id()));
+    // The change is noticed on a tick and goes out a few seconds later.
+    deliver(&mut laptop, &mut phone, now + 5_001_000);
+    assert_eq!(deliver(&mut laptop, &mut phone, now + 5_007_000), 1);
+    assert!(!phone.inbox.blocked.contains(&b.card.id()));
+
+    // A new avatar on the phone reaches the laptop's own card, and the
+    // laptop's older card does not take it back.
+    phone
+        .update_profile(
+            "Аня".into(),
+            "".into(),
+            Some(44),
+            &a.context(&routes, now + 10_000_000, &id(92)),
+        )
+        .unwrap();
+    deliver(&mut phone, &mut laptop, now + 10_000_001);
+    deliver(&mut phone, &mut laptop, now + 10_006_000);
+    assert_eq!(laptop.inbox.own.avatar_seed, Some(44));
+    deliver(&mut laptop, &mut phone, now + 13_000_000);
+    assert_eq!(phone.inbox.own.avatar_seed, Some(44));
+
+    // Another key cannot speak for the profile.
+    let mut fooled = Engine::new(a.card.clone()).unwrap();
+    for page in own_state(&phone.clone().tick(&routes, now + 20_000_000)) {
+        fooled
+            .receive(
+                page,
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 20_000_000, &id(93)),
+            )
+            .unwrap();
+    }
+    assert!(fooled.inbox.contacts.is_empty());
 }

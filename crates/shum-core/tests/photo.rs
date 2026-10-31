@@ -111,7 +111,7 @@ fn a_full_part_fits_one_packet() {
     assert_eq!(Packet::decode(&bytes).unwrap(), packet);
     // A part is a packet of its own, never next to a message.
     let mut two = serde_json::to_value(&packet).unwrap();
-    two["typing"] = serde_json::to_value(&Packet::default()).unwrap();
+    two["typing"] = serde_json::to_value(Packet::default()).unwrap();
     assert!(Packet::decode(&serde_json::to_vec(&two).unwrap()).is_err());
 }
 

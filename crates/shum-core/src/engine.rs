@@ -30,7 +30,17 @@ pub struct Engine {
     last_presence: HashMap<String, i64>,
     presence_timestamp: i64,
     held_reactions: HashMap<String, (String, String, i64)>,
+    /// What this device last told its other devices about the profile,
+    /// and when; and since when it has had something new to tell.
+    own_state_sent: Option<(OwnStateView, i64)>,
+    own_state_changed: Option<i64>,
 }
+/// The parts of the profile's state its devices share, compared cheaply.
+type OwnStateView = (String, Vec<(String, Phase, i64, String, bool, i64)>);
+/// A changed state waits this long for more changes before it goes out.
+const OWN_STATE_SETTLE_MS: i64 = 5_000;
+/// The state goes out again this often anyway.
+const OWN_STATE_REPEAT_MS: i64 = 3_600_000;
 pub struct Transition {
     pub state: Engine,
     pub actions: Vec<Action>,
@@ -47,6 +57,8 @@ impl Engine {
             last_presence: HashMap::new(),
             presence_timestamp: 0,
             held_reactions: HashMap::new(),
+            own_state_sent: None,
+            own_state_changed: None,
         })
     }
     /// A failed operation leaves the original state intact. Save `state` before
@@ -376,6 +388,7 @@ impl Engine {
             || packet.own_retract.is_some()
             || packet.own_clear.is_some()
             || packet.own_invitation.is_some()
+            || packet.own_state.is_some()
         {
             if !matches!(&source, Source::Nostr(key) if *key == self.inbox.own.nostr_key) {
                 return Ok(vec![]);
@@ -392,6 +405,12 @@ impl Engine {
                     self.outbox.mirror(copy);
                     self.settle_sent();
                 }
+            }
+            if let Some(state) = packet
+                .own_state
+                .filter(|s| s.validate(&self.inbox.own).is_ok())
+            {
+                self.take_own_state(state);
             }
             if let Some(read) = packet.own_read.filter(|r| r.validate().is_ok()) {
                 for message in &mut self.inbox.messages {
@@ -664,11 +683,14 @@ impl Engine {
             retry: Retry::default(),
         });
     }
-    pub fn block(&mut self, id: &str, blocked: bool) -> Result<()> {
+    /// Blocks or unblocks a contact; `at` dates the decision for the
+    /// profile's other devices.
+    pub fn block(&mut self, id: &str, blocked: bool, at: i64) -> Result<()> {
         self.live()?;
         if self.inbox.blocked.contains(id) == blocked {
             return Ok(());
         }
+        self.inbox.block_decisions.insert(id.into(), at);
         if blocked {
             let card = self.contact(id, false)?;
             self.inbox.blocked_cards.insert(id.into(), card);
@@ -786,7 +808,167 @@ impl Engine {
                 }
             }
         }
+        actions.extend(self.send_own_state(routes, now));
         actions
+    }
+    fn own_state_view(&self) -> OwnStateView {
+        let ids: HashSet<&String> = self
+            .inbox
+            .invitations
+            .iter()
+            .filter(|(_, s)| s.phase != Phase::Ready)
+            .map(|(id, _)| id)
+            .chain(self.inbox.blocked.iter())
+            .chain(self.inbox.block_decisions.keys())
+            .collect();
+        let mut rows: Vec<_> = ids
+            .into_iter()
+            .map(|id| {
+                let (phase, at, event) = self.inbox.invitations.get(id).map_or_else(
+                    || (Phase::Ready, 0, "-".to_string()),
+                    |s| (s.phase, s.updated_at, s.event_id.clone()),
+                );
+                let blocked = self.inbox.blocked.contains(id);
+                let decided = self.inbox.block_decisions.get(id).copied().unwrap_or(0);
+                (id.clone(), phase, at, event, blocked, decided)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        let own = &self.inbox.own;
+        (format!("{}:{:?}", own.id(), own.profile_revision), rows)
+    }
+    /// Every page of the profile's state, for its other devices: when this
+    /// device starts, shortly after something changes, and every hour.
+    fn send_own_state(&mut self, routes: &Routes, now: i64) -> Vec<Action> {
+        if !routes.internet {
+            return vec![];
+        }
+        let view = self.own_state_view();
+        let due = match &self.own_state_sent {
+            None => true,
+            Some((sent, at)) => {
+                if *sent != view {
+                    let since = *self.own_state_changed.get_or_insert(now);
+                    now - since >= OWN_STATE_SETTLE_MS
+                } else {
+                    self.own_state_changed = None;
+                    now - at >= OWN_STATE_REPEAT_MS
+                }
+            }
+        };
+        if !due {
+            return vec![];
+        }
+        let contacts: Vec<_> = view
+            .1
+            .iter()
+            .filter_map(|(id, phase, at, event, blocked, decided)| {
+                let card = self
+                    .inbox
+                    .contacts
+                    .get(id)
+                    .or_else(|| self.inbox.requests.get(id))
+                    .or_else(|| self.inbox.blocked_cards.get(id))?;
+                Some(OwnStateContact {
+                    card: card.clone(),
+                    phase: *phase,
+                    updated_at: *at,
+                    event_id: event.clone(),
+                    blocked: *blocked,
+                    blocked_at: *decided,
+                })
+            })
+            .collect();
+        let pages: Vec<_> = contacts.chunks(OwnState::PAGE).collect();
+        let count = pages.len().clamp(1, OwnState::MAX_PAGES as usize);
+        let own = self.inbox.own.clone();
+        let actions = (0..count)
+            .map(|page| Action::SendNostr {
+                operation: format!("own-state:{page}"),
+                recipient: Box::new(own.clone()),
+                packet: Box::new(Packet {
+                    own_state: Some(OwnState {
+                        card: own.clone(),
+                        page: page as i64,
+                        pages: count as i64,
+                        contacts: pages.get(page).map(|p| p.to_vec()).unwrap_or_default(),
+                    }),
+                    ..Packet::default()
+                }),
+            })
+            .collect();
+        self.own_state_sent = Some((view, now));
+        self.own_state_changed = None;
+        actions
+    }
+    /// Takes what another device of this profile decided later than this
+    /// one: a newer own card, invitation steps and blocks.
+    fn take_own_state(&mut self, state: OwnState) {
+        if state
+            .card
+            .preferred(&self.inbox.own)
+            .is_ok_and(|p| p.profile_id().ok() != self.inbox.own.profile_id().ok())
+        {
+            self.inbox.own = state.card;
+        }
+        for c in state.contacts {
+            let id = c.card.id();
+            let _ = self.inbox.merge(&c.card);
+            if c.phase != Phase::Ready
+                && self
+                    .inbox
+                    .invitations
+                    .get(&id)
+                    .is_none_or(|s| newer(c.updated_at, &c.event_id, s.updated_at, &s.event_id))
+            {
+                self.take_step(&c.card, c.phase, c.updated_at, &c.event_id);
+            }
+            let decided = self.inbox.block_decisions.get(&id).copied().unwrap_or(0);
+            if c.blocked_at > decided {
+                if !self.inbox.contacts.contains_key(&id)
+                    && !self.inbox.requests.contains_key(&id)
+                    && !self.inbox.blocked_cards.contains_key(&id)
+                {
+                    let _ = self.add_contact(c.card.clone());
+                }
+                if self.block(&id, c.blocked, c.blocked_at).is_ok() {
+                    self.inbox.block_decisions.insert(id, c.blocked_at);
+                }
+            }
+        }
+    }
+    /// Takes an invitation step another device of this profile took, with
+    /// the same effects as there, sending nothing.
+    fn take_step(&mut self, card: &Card, phase: Phase, at: i64, event: &str) {
+        let id = card.id();
+        if phase == Phase::IncomingPending {
+            if !self.inbox.contacts.contains_key(&id) && !self.inbox.blocked.contains(&id) {
+                self.inbox.requests.insert(id.clone(), card.clone());
+            }
+        } else if self.add_contact(card.clone()).is_err() && !self.inbox.contacts.contains_key(&id)
+        {
+            return;
+        }
+        self.inbox.invitations.insert(
+            id.clone(),
+            InvitationState {
+                phase,
+                updated_at: at,
+                event_id: event.into(),
+            },
+        );
+        match phase {
+            Phase::OutgoingPending => {
+                self.inbox.outgoing_requests.insert(id);
+            }
+            Phase::IncomingPending => {
+                self.inbox.outgoing_requests.remove(&id);
+            }
+            _ => {
+                self.inbox.requests.remove(&id);
+                self.inbox.outgoing_requests.remove(&id);
+            }
+        }
     }
     pub fn retire(&mut self) {
         self.outbox.retired = true;

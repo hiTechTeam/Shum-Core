@@ -134,6 +134,13 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
             engine.inbox.invitations.insert(id.clone(), decode(row)?);
         }
     }
+    if let Some(decisions) = dict(state, "blockDecisions")? {
+        for (id, value) in decisions {
+            if let Some(ms) = millis(value)? {
+                engine.inbox.block_decisions.insert(id.clone(), ms);
+            }
+        }
+    }
     if let Some(deleted) = dict(state, "deletedMessageIDs")? {
         for (id, value) in deleted {
             if let Some(ms) = millis(value)? {
@@ -465,6 +472,13 @@ pub fn project(previous: &Value, engine: &Engine, now: i64) -> Result<Value> {
         );
     }
     state["deletedMessageIDs"] = deleted.into();
+    let decisions: Map<String, Value> = engine
+        .inbox
+        .block_decisions
+        .iter()
+        .map(|(id, ms)| (id.clone(), date(*ms)))
+        .collect();
+    state["blockDecisions"] = decisions.into();
     let mut reactions = Map::<String, Value>::new();
     for ((message, person), mark) in &engine.inbox.reactions {
         let mut wrapper = json!({"value":previous["reactions"][message][person].clone()});

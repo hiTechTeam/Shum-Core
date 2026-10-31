@@ -417,6 +417,55 @@ impl OwnRead {
         Ok(())
     }
 }
+/// One page of this profile's state, from another of its devices (protocol
+/// section 04.8.1): its own card, and its steps and blocks with contacts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnState {
+    pub card: Card,
+    pub page: i64,
+    pub pages: i64,
+    pub contacts: Vec<OwnStateContact>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnStateContact {
+    pub card: Card,
+    pub phase: crate::rules::Phase,
+    pub updated_at: i64,
+    #[serde(rename = "eventID")]
+    pub event_id: String,
+    pub blocked: bool,
+    pub blocked_at: i64,
+}
+impl OwnState {
+    pub const PAGE: usize = 20;
+    pub const MAX_PAGES: i64 = 100;
+    pub fn validate(&self, own: &Card) -> Result<()> {
+        self.card.validate()?;
+        if self.card.noise_key != own.noise_key
+            || self.card.signing_key != own.signing_key
+            || self.card.nostr_key != own.nostr_key
+            || !(1..=Self::MAX_PAGES).contains(&self.pages)
+            || !(0..self.pages).contains(&self.page)
+            || self.contacts.len() > Self::PAGE
+        {
+            return Err(Error::Invalid("own state"));
+        }
+        for c in &self.contacts {
+            c.card.validate()?;
+            if c.card.id() == own.id()
+                || c.event_id.is_empty()
+                || c.event_id.len() > 255
+                || c.updated_at < 0
+                || c.blocked_at < 0
+            {
+                return Err(Error::Invalid("own state contact"));
+            }
+        }
+        Ok(())
+    }
+}
 /// A chat this profile cleared on another of its devices: everything in it
 /// up to `before`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +528,8 @@ pub struct Packet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own_invitation: Option<InvitationControl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_state: Option<OwnState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo_part: Option<crate::photo::PhotoPart>,
 }
 impl Packet {
@@ -503,6 +554,7 @@ impl Packet {
             packet.own_retract.is_some(),
             packet.own_clear.is_some(),
             packet.own_invitation.is_some(),
+            packet.own_state.is_some(),
             packet.photo_part.is_some(),
         ]
         .into_iter()
@@ -653,6 +705,7 @@ impl Default for Packet {
             own_retract: None,
             own_clear: None,
             own_invitation: None,
+            own_state: None,
             photo_part: None,
         }
     }
