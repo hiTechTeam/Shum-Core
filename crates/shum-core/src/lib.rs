@@ -17,6 +17,7 @@ pub mod invitation;
 pub mod noise;
 pub mod nostr;
 pub mod packet;
+pub mod photo;
 pub mod presence;
 pub mod profile;
 pub mod public;

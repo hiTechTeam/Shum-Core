@@ -136,6 +136,7 @@ impl Engine {
                 .ok_or(Error::Invalid("time overflow"))?,
             text: text.into(),
             reply,
+            photo: None,
         };
         let envelope = Envelope::seal(
             self.inbox.own.clone(),

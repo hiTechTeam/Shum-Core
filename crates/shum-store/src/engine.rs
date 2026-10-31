@@ -96,6 +96,7 @@ fn plain(v: &Value, e: &Envelope) -> Result<Plaintext> {
         } else {
             Some(decode(&v["reply"])?)
         },
+        photo: None,
     })
 }
 /// Rehydrates historical messages without treating their expired wire TTL as
