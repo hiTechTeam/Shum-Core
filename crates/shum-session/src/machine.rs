@@ -109,6 +109,8 @@ const EARLY_PART_MS: i64 = 3_600_000;
 const EARLY_PARTS: usize = 64;
 /// Photos being put together at once.
 const PHOTO_BUFFERS: usize = 16;
+/// A photo's parts go to the same peer over Bluetooth at most this often.
+const PHOTO_BLE_AGAIN_MS: i64 = 120_000;
 
 /// Being in the open chat goes out again this often while it is on screen.
 const PUBLIC_PRESENCE_REPEAT_MS: i64 = 15_000;
@@ -252,6 +254,10 @@ pub struct Machine<H: Host> {
     photo_parts: HashMap<String, Vec<PhotoPart>>,
     /// Open-chat notes this device already said it saw.
     public_seen_sent: HashSet<String>,
+    /// When a photo's parts last went to a peer over Bluetooth: they are
+    /// large for it, and a resend of the message within this while would
+    /// queue them again behind themselves.
+    photo_ble_sent: HashMap<(String, String), i64>,
     /// Opened parts of photos coming in, by message, with when the first
     /// came; and parts that came before their message.
     photo_buffers: HashMap<String, (i64, HashMap<usize, Vec<u8>>)>,
@@ -303,6 +309,7 @@ impl<H: Host> Machine<H> {
             inflight: HashSet::new(),
             photo_parts: HashMap::new(),
             public_seen_sent: HashSet::new(),
+            photo_ble_sent: HashMap::new(),
             photo_buffers: HashMap::new(),
             early_parts: Vec::new(),
             pushed: HashSet::new(),
@@ -477,6 +484,16 @@ impl<H: Host> Machine<H> {
             let Some((message, recipient, peer)) = parts else {
                 continue;
             };
+            if let Some(peer) = &peer {
+                let time = now();
+                self.photo_ble_sent
+                    .retain(|_, at| time - *at < PHOTO_BLE_AGAIN_MS);
+                let sent = (message.clone(), peer.clone());
+                if self.photo_ble_sent.contains_key(&sent) {
+                    continue;
+                }
+                self.photo_ble_sent.insert(sent, time);
+            }
             let Some(parts) = self.photo_parts(&message) else {
                 continue;
             };
