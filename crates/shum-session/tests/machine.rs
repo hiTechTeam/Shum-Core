@@ -1088,7 +1088,7 @@ fn clients_see_a_photo_coming_then_get_its_bytes() {
 }
 
 #[test]
-fn a_note_counts_who_saw_it_in_the_open_chat() {
+fn a_note_counts_who_saw_it_on_screen() {
     let mut anya = profile("Аня");
     let mut boris = profile("Борис");
     let mut vera = profile("Вера");
@@ -1103,27 +1103,26 @@ fn a_note_counts_who_saw_it_in_the_open_chat() {
             .unwrap()
     };
     ok(&mut anya, json!({"command":"broadcast","text":"Кто тут?"}));
-    mesh(&mut anya, &mut boris);
-    assert_eq!(views(&anya), 0, "nobody had the chat open");
+    let note = mesh(&mut anya, &mut boris)[0].clone();
+    hear(&mut vera, &note);
+    let key = format!("{}:{}", note.card.id(), note.id);
 
-    // Boris and Vera open it: each counts once, however often they say so.
-    for _ in 0..2 {
-        ok(
-            &mut boris,
-            json!({"command":"public_presence","online":false}),
-        );
-        mesh(&mut boris, &mut anya);
-        ok(
-            &mut boris,
-            json!({"command":"public_presence","online":true}),
-        );
-        mesh(&mut boris, &mut anya);
-    }
-    assert_eq!(views(&anya), 1);
+    // Having the chat open is not seeing the note.
     ok(
-        &mut vera,
+        &mut boris,
         json!({"command":"public_presence","online":true}),
     );
+    mesh(&mut boris, &mut anya);
+    assert_eq!(views(&anya), 0);
+
+    // The note came on Boris's screen, twice: he counts once, and the second
+    // time nothing even goes out.
+    ok(&mut boris, json!({"command":"public_seen","notes":[key]}));
+    assert_eq!(mesh(&mut boris, &mut anya).len(), 1);
+    ok(&mut boris, json!({"command":"public_seen","notes":[key]}));
+    assert!(mesh(&mut boris, &mut anya).is_empty());
+    assert_eq!(views(&anya), 1);
+    ok(&mut vera, json!({"command":"public_seen","notes":[key]}));
     mesh(&mut vera, &mut anya);
     assert_eq!(views(&anya), 2);
     assert!(
@@ -1131,11 +1130,8 @@ fn a_note_counts_who_saw_it_in_the_open_chat() {
         "only the count"
     );
 
-    // Anya's own presence does not count for her note.
-    ok(
-        &mut anya,
-        json!({"command":"public_presence","online":true}),
-    );
+    // Anya seeing her own note does not count.
+    ok(&mut anya, json!({"command":"public_seen","notes":[key]}));
     mesh(&mut anya, &mut boris);
     assert_eq!(views(&anya), 2);
 }

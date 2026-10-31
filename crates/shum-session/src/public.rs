@@ -23,47 +23,32 @@ pub fn contains(state: &Value, author: &str, id: &str) -> bool {
         .is_some_and(|notes| notes.iter().any(|n| n["id"] == id && n["author"] == author))
 }
 
-/// Notes here from others than `person`, sent by `now`, that do not yet
-/// count `person` as having seen them.
-fn unseen<'a>(notes: &'a [Value], person: &'a str, now: i64) -> impl Iterator<Item = usize> + 'a {
-    notes.iter().enumerate().filter_map(move |(i, n)| {
-        let viewers = n["viewers"].as_array().map_or(0, Vec::len);
-        (n["author"] != person
-            && n["timestamp"].as_i64().is_some_and(|t| t <= now)
-            && viewers < MAX_VIEWERS
-            && !n["viewers"]
-                .as_array()
-                .is_some_and(|v| v.iter().any(|p| p == person)))
-        .then_some(i)
-    })
-}
-
-/// Whether `person`, now in the open chat, has notes here still to count
-/// as seen; cheap, so the state is copied only when they do.
-pub fn has_unseen(state: &Value, person: &str, now: i64) -> bool {
-    state["publicChat"]["notes"]
-        .as_array()
-        .is_some_and(|notes| unseen(notes, person, now).next().is_some())
-}
-
-/// `person` has the open chat on screen at `now`: every note already here
-/// from someone else counts them as having seen it. Returns whether anything
-/// changed.
-pub fn seen_by(state: &mut Value, person: &str, now: i64) -> bool {
+/// `person` saw these notes, each "authorID:noteID", on screen: each of
+/// them from someone else counts them once. Returns whether anything changed.
+pub fn seen(state: &mut Value, person: &str, keys: &[String]) -> bool {
     let Some(notes) = state["publicChat"]["notes"].as_array_mut() else {
         return false;
     };
-    let fresh: Vec<usize> = unseen(notes, person, now).collect();
-    for &i in &fresh {
-        let note = &mut notes[i];
+    let mut changed = false;
+    for note in notes.iter_mut() {
+        let target = key(
+            note["author"].as_str().unwrap_or(""),
+            note["id"].as_str().unwrap_or(""),
+        );
+        if note["author"] == person || !keys.contains(&target) {
+            continue;
+        }
         if !note["viewers"].is_array() {
             note["viewers"] = json!([]);
         }
         if let Some(viewers) = note["viewers"].as_array_mut() {
-            viewers.push(json!(person));
+            if viewers.len() < MAX_VIEWERS && !viewers.iter().any(|p| p == person) {
+                viewers.push(json!(person));
+                changed = true;
+            }
         }
     }
-    !fresh.is_empty()
+    changed
 }
 
 /// The person's reaction on a note, if any.
@@ -170,7 +155,7 @@ pub fn apply(
             true
         }
         // Typing is shown, never stored.
-        PublicBody::Typing { .. } | PublicBody::Presence { .. } => false,
+        PublicBody::Typing { .. } | PublicBody::Presence { .. } | PublicBody::Seen { .. } => false,
     };
     if changed {
         if !chat["authors"].is_object() {

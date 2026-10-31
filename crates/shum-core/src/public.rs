@@ -16,6 +16,8 @@ pub const FRAME_KIND: u8 = 0x30;
 pub const MAX_TEXT: usize = 2000;
 /// Longest quoted excerpt in bytes.
 const MAX_QUOTE: usize = 500;
+/// Most notes one "seen" names, so it stays a few fragments long.
+pub const MAX_SEEN: usize = 32;
 
 /// What happened in the open chat.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +49,9 @@ pub enum PublicBody {
     /// The sender has the open chat on screen, repeated while it stays
     /// there, or left it. Like typing, it is shown and never kept.
     Presence { online: bool },
+    /// The sender saw these notes on screen, each as "authorID:noteID".
+    /// They are counted, never kept as an event.
+    Seen { notes: Vec<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +101,16 @@ impl PublicEvent {
             } => short_id(note_id) && short_id(author_id),
             PublicBody::Retract { note_id } => short_id(note_id),
             PublicBody::Typing { .. } | PublicBody::Presence { .. } => true,
+            PublicBody::Seen { notes } => {
+                (1..=MAX_SEEN).contains(&notes.len())
+                    && notes.iter().all(|n| {
+                        n.split_once(':').is_some_and(|(author, id)| {
+                            author.len() == 64
+                                && author.bytes().all(|b| b.is_ascii_hexdigit())
+                                && short_id(id)
+                        })
+                    })
+            }
         };
         if !valid {
             return Err(Error::Invalid("public event body"));

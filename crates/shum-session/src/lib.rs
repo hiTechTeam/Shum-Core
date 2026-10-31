@@ -176,6 +176,11 @@ pub enum Request {
     PublicTyping {
         active: bool,
     },
+    /// These open-chat notes, each "authorID:noteID", came on screen; each
+    /// is told to everyone nearby once, over Bluetooth only.
+    PublicSeen {
+        notes: Vec<String>,
+    },
     /// The open chat came on screen or left it. While it is on screen the
     /// session repeats this to everyone nearby, over Bluetooth only.
     PublicPresence {

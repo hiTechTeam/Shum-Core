@@ -250,6 +250,8 @@ pub struct Machine<H: Host> {
     /// Sealed parts of photos this device sends, by message; rebuilt from
     /// the stored JPEG when not here.
     photo_parts: HashMap<String, Vec<PhotoPart>>,
+    /// Open-chat notes this device already said it saw.
+    public_seen_sent: HashSet<String>,
     /// Opened parts of photos coming in, by message, with when the first
     /// came; and parts that came before their message.
     photo_buffers: HashMap<String, (i64, HashMap<usize, Vec<u8>>)>,
@@ -300,6 +302,7 @@ impl<H: Host> Machine<H> {
             encounter_retention: crate::directory::DEFAULT_RETENTION_MS,
             inflight: HashSet::new(),
             photo_parts: HashMap::new(),
+            public_seen_sent: HashSet::new(),
             photo_buffers: HashMap::new(),
             early_parts: Vec::new(),
             pushed: HashSet::new(),
@@ -980,6 +983,24 @@ impl<H: Host> Machine<H> {
                     });
                 }
             }
+            Request::PublicSeen { notes } => {
+                // Each note once: rows come on screen again and again.
+                if self.public_seen_sent.len() > 5000 {
+                    self.public_seen_sent.clear();
+                }
+                let fresh: Vec<String> = notes
+                    .into_iter()
+                    .filter(|n| self.public_seen_sent.insert(n.clone()))
+                    .collect();
+                for chunk in fresh.chunks(shum_core::public::MAX_SEEN) {
+                    self.effects.push(Effect::Broadcast {
+                        id: uuid()?,
+                        body: PublicBody::Seen {
+                            notes: chunk.to_vec(),
+                        },
+                    });
+                }
+            }
             Request::PublicRetract { note } => {
                 let own = self.engine.inbox.own.id();
                 if !crate::public::contains(self.host.state(), &own, &note) {
@@ -1562,12 +1583,13 @@ impl<H: Host> Machine<H> {
                         let until = now() + PUBLIC_PRESENCE_SHOWN_MS;
                         self.public_present
                             .insert(author.clone(), (event.card.clone(), until));
-                        // Being there, they see what the chat already holds.
-                        let time = now();
-                        if crate::public::has_unseen(self.host.state(), &author, time) {
-                            self.edit(|state| crate::public::seen_by(state, &author, time))?;
-                        }
                     }
+                }
+                if let PublicBody::Seen { notes } = &event.body {
+                    if author != self.engine.inbox.own.id() {
+                        self.edit(|state| crate::public::seen(state, &author, notes))?;
+                    }
+                    return Ok(());
                 }
                 if matches!(event.body, PublicBody::Presence { .. }) {
                     return Ok(());
