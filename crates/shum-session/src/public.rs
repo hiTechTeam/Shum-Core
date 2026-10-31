@@ -9,6 +9,8 @@ use shum_core::{card::Card, public::PublicBody};
 pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 /// At most this many notes are kept; the oldest go first.
 const MAX_NOTES: usize = 500;
+/// At most this many people are counted as having seen one note.
+const MAX_VIEWERS: usize = 1000;
 
 fn key(author: &str, id: &str) -> String {
     format!("{author}:{id}")
@@ -19,6 +21,49 @@ pub fn contains(state: &Value, author: &str, id: &str) -> bool {
     state["publicChat"]["notes"]
         .as_array()
         .is_some_and(|notes| notes.iter().any(|n| n["id"] == id && n["author"] == author))
+}
+
+/// Notes here from others than `person`, sent by `now`, that do not yet
+/// count `person` as having seen them.
+fn unseen<'a>(notes: &'a [Value], person: &'a str, now: i64) -> impl Iterator<Item = usize> + 'a {
+    notes.iter().enumerate().filter_map(move |(i, n)| {
+        let viewers = n["viewers"].as_array().map_or(0, Vec::len);
+        (n["author"] != person
+            && n["timestamp"].as_i64().is_some_and(|t| t <= now)
+            && viewers < MAX_VIEWERS
+            && !n["viewers"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|p| p == person)))
+        .then_some(i)
+    })
+}
+
+/// Whether `person`, now in the open chat, has notes here still to count
+/// as seen; cheap, so the state is copied only when they do.
+pub fn has_unseen(state: &Value, person: &str, now: i64) -> bool {
+    state["publicChat"]["notes"]
+        .as_array()
+        .is_some_and(|notes| unseen(notes, person, now).next().is_some())
+}
+
+/// `person` has the open chat on screen at `now`: every note already here
+/// from someone else counts them as having seen it. Returns whether anything
+/// changed.
+pub fn seen_by(state: &mut Value, person: &str, now: i64) -> bool {
+    let Some(notes) = state["publicChat"]["notes"].as_array_mut() else {
+        return false;
+    };
+    let fresh: Vec<usize> = unseen(notes, person, now).collect();
+    for &i in &fresh {
+        let note = &mut notes[i];
+        if !note["viewers"].is_array() {
+            note["viewers"] = json!([]);
+        }
+        if let Some(viewers) = note["viewers"].as_array_mut() {
+            viewers.push(json!(person));
+        }
+    }
+    !fresh.is_empty()
 }
 
 /// The person's reaction on a note, if any.
@@ -256,6 +301,13 @@ pub fn notes(state: &Value, now: i64) -> Vec<Value> {
                     let author = n["author"].as_str().unwrap_or("");
                     let target = key(author, n["id"].as_str().unwrap_or(""));
                     let mut note = n.clone();
+                    // Clients show how many saw it, not who.
+                    let views = note
+                        .as_object_mut()
+                        .and_then(|o| o.remove("viewers"))
+                        .and_then(|v| v.as_array().map(Vec::len))
+                        .unwrap_or(0);
+                    note["views"] = json!(views);
                     note["card"] = chat["authors"][author].clone();
                     note["reactions"] = chat["reactions"][&target]
                         .as_object()

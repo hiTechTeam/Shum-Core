@@ -1562,6 +1562,11 @@ impl<H: Host> Machine<H> {
                         let until = now() + PUBLIC_PRESENCE_SHOWN_MS;
                         self.public_present
                             .insert(author.clone(), (event.card.clone(), until));
+                        // Being there, they see what the chat already holds.
+                        let time = now();
+                        if crate::public::has_unseen(self.host.state(), &author, time) {
+                            self.edit(|state| crate::public::seen_by(state, &author, time))?;
+                        }
                     }
                 }
                 if matches!(event.body, PublicBody::Presence { .. }) {

@@ -1086,3 +1086,56 @@ fn clients_see_a_photo_coming_then_get_its_bytes() {
         STANDARD.encode(&bytes)
     );
 }
+
+#[test]
+fn a_note_counts_who_saw_it_in_the_open_chat() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let mut vera = profile("Вера");
+    let views = |m: &Machine<Memory>| -> i64 {
+        m.snapshot()["publicChat"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["text"] == "Кто тут?")
+            .unwrap()["views"]
+            .as_i64()
+            .unwrap()
+    };
+    ok(&mut anya, json!({"command":"broadcast","text":"Кто тут?"}));
+    mesh(&mut anya, &mut boris);
+    assert_eq!(views(&anya), 0, "nobody had the chat open");
+
+    // Boris and Vera open it: each counts once, however often they say so.
+    for _ in 0..2 {
+        ok(
+            &mut boris,
+            json!({"command":"public_presence","online":false}),
+        );
+        mesh(&mut boris, &mut anya);
+        ok(
+            &mut boris,
+            json!({"command":"public_presence","online":true}),
+        );
+        mesh(&mut boris, &mut anya);
+    }
+    assert_eq!(views(&anya), 1);
+    ok(
+        &mut vera,
+        json!({"command":"public_presence","online":true}),
+    );
+    mesh(&mut vera, &mut anya);
+    assert_eq!(views(&anya), 2);
+    assert!(
+        anya.snapshot()["publicChat"][0].get("viewers").is_none(),
+        "only the count"
+    );
+
+    // Anya's own presence does not count for her note.
+    ok(
+        &mut anya,
+        json!({"command":"public_presence","online":true}),
+    );
+    mesh(&mut anya, &mut boris);
+    assert_eq!(views(&anya), 2);
+}
