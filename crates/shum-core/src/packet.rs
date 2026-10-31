@@ -248,55 +248,64 @@ impl ControlFields for RetractFields {
     }
 }
 pub type Retract = Control<RetractFields>;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ReactionKind {
-    Heart,
-    Like,
-    Dislike,
-    Laugh,
-    Fire,
-    Coffin,
-    Hundred,
-    Horror,
-    // The shared set from here on (see `pool`); clients before it ignore them.
-    Adore,
-    Wow,
-    Sad,
-    Angry,
-    Hmm,
-    Party,
-    Wave,
-    Ok,
-    Peace,
-    Crossed,
-    Rock,
-    Shaka,
-    Fist,
-    Clap,
-    Ghost,
-    Person,
-    Cool,
-    Eyes,
-    CrabLyublyu,
-    CrabObnimayu,
-    CrabPlachu,
-    CrabShok,
-    CrabUra,
-    CrabIcon,
-    CatLyublyu,
-    CatRyba,
-    CatEda,
-    CatKorobka,
-    CatTygydyk,
-    CatShshsh,
-    CatBuhanka,
-    CatUps,
-    CatIcon,
-    BunZlyus,
-    BunPlachu,
-    BunIcon,
-    FrogIcon,
+/// A reaction: the name of a sticker from a set that is a reaction too
+/// (see `stickers`). The first eight were all of v1; a name no set has
+/// does not decode, so a packet carrying it is dropped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ReactionKind(&'static str);
+
+#[allow(non_upper_case_globals)]
+impl ReactionKind {
+    pub const Heart: Self = Self("heart");
+    pub const Like: Self = Self("like");
+    pub const Dislike: Self = Self("dislike");
+    pub const Laugh: Self = Self("laugh");
+    pub const Fire: Self = Self("fire");
+    pub const Coffin: Self = Self("coffin");
+    pub const Hundred: Self = Self("hundred");
+    pub const Horror: Self = Self("horror");
+
+    /// Its name in the protocol.
+    pub fn name(self) -> &'static str {
+        self.0
+    }
+
+    /// The reaction with this name, if a set that is a reaction has it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        crate::stickers::SETS
+            .iter()
+            .filter(|set| set.reactions)
+            .flat_map(|set| set.stickers)
+            .find(|sticker| sticker.id == name)
+            .map(|sticker| Self(sticker.id))
+    }
+}
+
+impl Serialize for ReactionKind {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReactionKind {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::from_name(&name).ok_or_else(|| serde::de::Error::custom("unknown reaction"))
+    }
+}
+
+/// A stored reaction this version no longer knows reads as none, so the
+/// rest of the state still loads.
+pub fn known_reaction<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ReactionKind>, D::Error> {
+    let name = Option::<String>::deserialize(deserializer)?;
+    Ok(name.and_then(|name| ReactionKind::from_name(&name)))
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactionFields {

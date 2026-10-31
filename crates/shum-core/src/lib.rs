@@ -25,6 +25,7 @@ pub mod public;
 pub mod queue;
 pub mod reaction_art;
 pub mod rules;
+pub mod stickers;
 pub mod wire;
 
 #[cfg(feature = "uniffi")]

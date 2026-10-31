@@ -419,32 +419,44 @@ pub fn command_schema_version() -> u64 {
 }
 
 /// The v1 pixel avatar as 36x36 RGBA bytes.
-/// A reaction's picture from the shared set as RGBA bytes, row by row; its
-/// side is the square root of a quarter of the length. Empty for a name
-/// the set does not have.
+/// A sticker's or reaction's picture as RGBA bytes, row by row; its side
+/// is the square root of a quarter of the length. Empty for a name no set
+/// has.
 #[uniffi::export]
 pub fn reaction_pixels(kind: String) -> Vec<u8> {
-    serde_json::from_value(serde_json::Value::String(kind))
-        .map(|kind| shum_core::pool::rgba(kind).1)
+    shum_core::pool::sticker(&kind)
+        .map(|sticker| shum_core::pool::rgba(&sticker.art))
         .unwrap_or_default()
 }
 
-/// The shared set of reactions in order, as JSON: `[{"section", "kinds"}]`.
+/// A set's picture for a list of sets, as RGBA bytes.
+#[uniffi::export]
+pub fn sticker_set_pixels(set: String) -> Vec<u8> {
+    shum_core::stickers::SETS
+        .iter()
+        .find(|s| s.id == set)
+        .map(|s| shum_core::pool::rgba(&s.icon))
+        .unwrap_or_default()
+}
+
+/// The sets as JSON, reactions first: `[{"section", "title", "reactions",
+/// "kinds": [{"id", "emoji", "word"}]}]`; titles are Russian, for clients
+/// to translate.
 #[uniffi::export]
 pub fn reaction_pool() -> String {
-    let mut sections: Vec<(shum_core::pool::Section, Vec<serde_json::Value>)> = Vec::new();
-    for kind in shum_core::pool::ORDER {
-        let section = shum_core::pool::section(kind);
-        let name = serde_json::to_value(kind).unwrap_or_default();
-        match sections.last_mut() {
-            Some((last, kinds)) if *last == section => kinds.push(name),
-            _ => sections.push((section, vec![name])),
-        }
-    }
     serde_json::Value::Array(
-        sections
-            .into_iter()
-            .map(|(section, kinds)| serde_json::json!({"section": section.name(), "kinds": kinds}))
+        shum_core::stickers::SETS
+            .iter()
+            .map(|set| {
+                serde_json::json!({
+                    "section": set.id,
+                    "title": set.title,
+                    "reactions": set.reactions,
+                    "kinds": set.stickers.iter().map(|s| serde_json::json!({
+                        "id": s.id, "emoji": s.emoji, "word": s.word
+                    })).collect::<Vec<_>>(),
+                })
+            })
             .collect(),
     )
     .to_string()
