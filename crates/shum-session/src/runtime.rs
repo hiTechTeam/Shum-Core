@@ -44,6 +44,15 @@ impl Host for OpenProfile {
     fn backup(&self, password: &str, created_at: &str) -> Result<Vec<u8>> {
         Ok(shum_store::backup::export(self, password, created_at)?)
     }
+    fn put_photo(&mut self, id: &str, jpeg: &[u8]) -> Result<()> {
+        Ok(self.store.put_photo(id, jpeg)?)
+    }
+    fn photo(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.store.photo(id)?)
+    }
+    fn delete_photo(&mut self, id: &str) -> Result<()> {
+        Ok(self.store.delete_photo(id)?)
+    }
 }
 
 enum Job {

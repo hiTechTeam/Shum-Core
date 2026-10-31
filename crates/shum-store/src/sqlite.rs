@@ -5,7 +5,9 @@ use crate::{
     Error, Result,
 };
 use fs2::FileExt;
-use rusqlite::{params, types::ValueRef, Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{
+    params, types::ValueRef, Connection, OpenFlags, OptionalExtension, TransactionBehavior,
+};
 use serde_json::Value;
 use shum_core::crypto::Secret32;
 use std::{
@@ -14,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+/// Bucket name for sealing photos, kept apart from the records.
+const PHOTOS: &str = "photos";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     pub transactions: u64,
@@ -177,6 +181,11 @@ impl Store {
             }
         }
         configure(&connection)?;
+        // Photos live apart from the state, so they are read only when shown;
+        // older apps ignore the table.
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS photos(id TEXT PRIMARY KEY NOT NULL,payload BLOB NOT NULL) WITHOUT ROWID;",
+        )?;
         let mut store = Self {
             connection,
             records,
@@ -194,6 +203,44 @@ impl Store {
     }
     pub fn state(&self) -> &Value {
         self.records.state()
+    }
+    /// Stores the JPEG of the message `id`, sealed like the records.
+    pub fn put_photo(&self, id: &str, jpeg: &[u8]) -> Result<()> {
+        let key = self.records.key().expose();
+        let index = codec::index_id(key, PHOTOS, id);
+        let payload = codec::seal(
+            key,
+            &codec::random_nonce()?,
+            jpeg,
+            &codec::aad(PHOTOS, &index, 0),
+        )?;
+        self.connection.execute(
+            "INSERT INTO photos(id,payload) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+            params![index, payload],
+        )?;
+        Ok(())
+    }
+    /// The JPEG of the message `id`, if this device has it.
+    pub fn photo(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let key = self.records.key().expose();
+        let index = codec::index_id(key, PHOTOS, id);
+        let payload: Option<Vec<u8>> = self
+            .connection
+            .query_row(
+                "SELECT payload FROM photos WHERE id=?1",
+                params![index],
+                |r| r.get(0),
+            )
+            .optional()?;
+        payload
+            .map(|p| Ok(codec::open(key, &p, &codec::aad(PHOTOS, &index, 0))?.to_vec()))
+            .transpose()
+    }
+    pub fn delete_photo(&self, id: &str) -> Result<()> {
+        let index = codec::index_id(self.records.key().expose(), PHOTOS, id);
+        self.connection
+            .execute("DELETE FROM photos WHERE id=?1", params![index])?;
+        Ok(())
     }
     pub fn stats(&self) -> CommitStats {
         self.stats

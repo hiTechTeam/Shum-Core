@@ -52,6 +52,17 @@ pub trait Host {
     fn backup(&self, _password: &str, _created_at: &str) -> Result<Vec<u8>> {
         Err(text("Резервная копия здесь пока недоступна"))
     }
+    /// Stores the JPEG of message `id` apart from the state (protocol
+    /// section 04.9), so it is read only when shown.
+    fn put_photo(&mut self, _id: &str, _jpeg: &[u8]) -> Result<()> {
+        Err(text("Фото здесь пока недоступны"))
+    }
+    fn photo(&self, _id: &str) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn delete_photo(&mut self, _id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// By name, then by ID: people may share a name, and a list must not

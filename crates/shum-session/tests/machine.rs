@@ -14,6 +14,7 @@ struct Memory {
     keys: ProfileKeys,
     records: Records,
     commits: usize,
+    photos: std::collections::HashMap<String, Vec<u8>>,
 }
 impl Host for Memory {
     fn keys(&self) -> &ProfileKeys {
@@ -31,6 +32,17 @@ impl Host for Memory {
     }
     fn profile(&self) -> Value {
         json!({"id": "test", "ownerId": self.keys.owner_id()})
+    }
+    fn put_photo(&mut self, id: &str, jpeg: &[u8]) -> anyhow::Result<()> {
+        self.photos.insert(id.into(), jpeg.to_vec());
+        Ok(())
+    }
+    fn photo(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(self.photos.get(id).cloned())
+    }
+    fn delete_photo(&mut self, id: &str) -> anyhow::Result<()> {
+        self.photos.remove(id);
+        Ok(())
     }
 }
 
@@ -55,6 +67,7 @@ fn profile(name: &str) -> Machine<Memory> {
         keys,
         records,
         commits: 0,
+        photos: Default::default(),
     };
     let mut machine = Machine::new(host, false, Default::default()).unwrap();
     machine.set_relays(vec!["wss://relay.example".into()]);
@@ -533,6 +546,7 @@ fn twin(of: &Machine<Memory>) -> Machine<Memory> {
             keys,
             records,
             commits: 0,
+            photos: Default::default(),
         },
         false,
         Default::default(),

@@ -113,6 +113,15 @@ impl Host for StoreHost {
             created_at,
         )?)
     }
+    fn put_photo(&mut self, id: &str, jpeg: &[u8]) -> anyhow::Result<()> {
+        Ok(self.store.put_photo(id, jpeg)?)
+    }
+    fn photo(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(self.store.photo(id)?)
+    }
+    fn delete_photo(&mut self, id: &str) -> anyhow::Result<()> {
+        Ok(self.store.delete_photo(id)?)
+    }
 }
 
 fn answer(result: Result<Value, Failure>) -> Value {

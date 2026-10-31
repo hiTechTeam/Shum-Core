@@ -309,3 +309,42 @@ fn cryptokit_legacy_aes_layer_uses_a_separate_key_and_imports_once() {
         "Архив Swift ☕️"
     );
 }
+
+#[test]
+fn photos_live_apart_sealed_in_an_older_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("swift.sqlite");
+    let v = vector();
+    // A database the iOS app made before photos existed.
+    fixture(&path, &v);
+    let before = raw(&path);
+    let owner = v["owner_id"].as_str().unwrap();
+    let id = "11111111-2222-4333-8444-000000000077";
+    let jpeg: Vec<u8> = [0xff, 0xd8, 0xff]
+        .into_iter()
+        .chain(b"distinctive photo bytes".repeat(50))
+        .collect();
+    {
+        let store = Store::open(&path, owner, Secret32::new(key(&v))).unwrap();
+        assert_eq!(store.photo(id).unwrap(), None);
+        store.put_photo(id, &jpeg).unwrap();
+        assert_eq!(store.photo(id).unwrap().as_deref(), Some(jpeg.as_slice()));
+        assert_eq!(store.stats().transactions, 0, "the state is untouched");
+    }
+    assert_eq!(raw(&path), before, "records stay as they were");
+    let file: Vec<u8> = [
+        fs::read(&path).unwrap(),
+        fs::read(dir.path().join("swift.sqlite-wal")).unwrap_or_default(),
+    ]
+    .concat();
+    for secret in [&b"distinctive photo bytes"[..], id.as_bytes()] {
+        assert!(
+            !file.windows(secret.len()).any(|w| w == secret),
+            "sealed and keyed by a hidden ID"
+        );
+    }
+    let store = Store::open(&path, owner, Secret32::new(key(&v))).unwrap();
+    assert_eq!(store.photo(id).unwrap().as_deref(), Some(jpeg.as_slice()));
+    store.delete_photo(id).unwrap();
+    assert_eq!(store.photo(id).unwrap(), None);
+}
