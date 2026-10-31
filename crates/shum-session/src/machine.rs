@@ -243,6 +243,9 @@ pub struct Machine<H: Host> {
     /// changes, or someone starts or stops typing in the open chat or opens
     /// or leaves it: all stored nowhere, so clients know to show it.
     pub nearby_changes: u64,
+    /// Who types to this profile and who has its chat open, as last counted
+    /// in `nearby_changes`.
+    shown_signals: u64,
     /// Bluetooth status for snapshots; native clients keep it up to date.
     pub bluetooth: Value,
     relays: Vec<String>,
@@ -303,6 +306,7 @@ impl<H: Host> Machine<H> {
             client,
             nearby: HashMap::new(),
             nearby_changes: 0,
+            shown_signals: 0,
             bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             relays: Vec::new(),
             push,
@@ -332,7 +336,31 @@ impl<H: Host> Machine<H> {
 
     /// What to do now. Every input below adds to it.
     pub fn effects(&mut self) -> Vec<Effect> {
+        // Typing and "in chat" store nothing: a contact starting, stopping
+        // or timing out counts as a nearby change, so clients show it at once
+        // whether it came by Bluetooth or a relay.
+        let signals = self.signals();
+        if signals != self.shown_signals {
+            self.shown_signals = signals;
+            self.nearby_changes += 1;
+        }
         std::mem::take(&mut self.effects)
+    }
+
+    fn signals(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let time = now();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for signals in [&self.engine.inbox.typing, &self.engine.inbox.presence] {
+            let mut ids: Vec<_> = signals
+                .iter()
+                .filter(|(_, s)| s.active(time))
+                .map(|(id, _)| id)
+                .collect();
+            ids.sort();
+            ids.hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// The person asked to stop the session.
@@ -1043,6 +1071,8 @@ impl<H: Host> Machine<H> {
                         e.inbox.foreground_contact = id.clone();
                     }
                     if let Some(id) = id {
+                        // The contact sees "in chat" while it stays open.
+                        actions.extend(e.presence(&id, true, c).unwrap_or_default());
                         actions.extend(e.mark_read(&id, c)?);
                     }
                     Ok(actions)
@@ -1679,7 +1709,15 @@ impl<H: Host> Machine<H> {
 
     /// Call about once a second: retries, expiry and waiting lookups.
     pub fn tick(&mut self) {
-        if let Err(error) = self.apply(|e, c| Ok(e.tick(c.routes, c.now))) {
+        if let Err(error) = self.apply(|e, c| {
+            let mut actions = e.tick(c.routes, c.now);
+            // "In chat" lasts 40 seconds; the open chat says it again, at
+            // most every 25.
+            if let Some(id) = e.inbox.foreground_contact.clone() {
+                actions.extend(e.presence(&id, true, c).unwrap_or_default());
+            }
+            Ok(actions)
+        }) {
             self.last_error = Some(error.to_string());
         }
         self.send_public_copies();

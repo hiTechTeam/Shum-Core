@@ -830,6 +830,52 @@ fn chatting() -> (Machine<Memory>, Machine<Memory>) {
     (anya, boris)
 }
 
+#[test]
+fn a_contact_typing_or_in_the_chat_tells_clients_to_redraw() {
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let mut changed = |anya: &mut Machine<Memory>, boris: &mut Machine<Memory>, request: Value| {
+        let before = boris.nearby_changes;
+        ok(anya, request);
+        relay(anya, boris);
+        boris.effects();
+        boris.nearby_changes > before
+    };
+    boris.effects();
+    assert!(
+        changed(
+            &mut anya,
+            &mut boris,
+            json!({"command":"focus","contact":boris_id})
+        ),
+        "in the chat"
+    );
+    assert!(changed(
+        &mut anya,
+        &mut boris,
+        json!({"command":"typing","contact":boris_id,"active":true})
+    ));
+    let typing = boris.nearby_changes;
+    boris.effects();
+    assert_eq!(
+        boris.nearby_changes, typing,
+        "nothing new, nothing to redraw"
+    );
+    assert!(changed(
+        &mut anya,
+        &mut boris,
+        json!({"command":"typing","contact":boris_id,"active":false})
+    ));
+    assert!(
+        changed(
+            &mut anya,
+            &mut boris,
+            json!({"command":"focus","contact":null})
+        ),
+        "left the chat"
+    );
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);
