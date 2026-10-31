@@ -134,6 +134,8 @@ const PHOTO_BLE_AGAIN_MS: i64 = 120_000;
 const PUBLIC_PRESENCE_REPEAT_MS: i64 = 15_000;
 /// Someone shows as in the open chat this long after their last signal.
 const PUBLIC_PRESENCE_SHOWN_MS: i64 = 40_000;
+/// Typing to a contact goes out once more this soon after it starts.
+const TYPING_AGAIN_MS: i64 = 1_200;
 /// Own typing in the open chat goes out again this often while it lasts.
 const PUBLIC_TYPING_REPEAT_MS: i64 = 4_000;
 /// Someone's typing shows this long after their last signal.
@@ -264,6 +266,8 @@ pub struct Machine<H: Host> {
     /// Who types to this profile and who has its chat open, as last counted
     /// in `nearby_changes`.
     shown_signals: u64,
+    /// The contact typing went to and when to send it once more.
+    typing_again: Option<(String, i64)>,
     /// Bluetooth status for snapshots; native clients keep it up to date.
     pub bluetooth: Value,
     relays: Vec<String>,
@@ -325,6 +329,7 @@ impl<H: Host> Machine<H> {
             nearby: HashMap::new(),
             nearby_changes: 0,
             shown_signals: 0,
+            typing_again: None,
             bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             relays: Vec::new(),
             push,
@@ -1106,7 +1111,15 @@ impl<H: Host> Machine<H> {
             }
             Request::Typing { contact, active } => {
                 let id = self.contact(&contact)?;
+                let starts = active
+                    && !self.engine.last_typing_active(&id)
+                    && self.engine.inbox.foreground_contact.as_deref() == Some(id.as_str());
                 self.apply(|e, c| e.set_typing(&id, active, c))?;
+                if starts {
+                    self.typing_again = Some((id, now() + TYPING_AGAIN_MS));
+                } else if !active {
+                    self.typing_again = None;
+                }
             }
             Request::Presence { contact, online } => {
                 let id = self.contact(&contact)?;
@@ -1748,6 +1761,11 @@ impl<H: Host> Machine<H> {
             Ok(actions)
         }) {
             self.last_error = Some(error.to_string());
+        }
+        if let Some((id, _)) = self.typing_again.take_if(|(_, at)| *at <= now()) {
+            if let Err(error) = self.apply(|e, c| e.repeat_typing(&id, c)) {
+                self.last_error = Some(error.to_string());
+            }
         }
         self.send_public_copies();
         let time = now();

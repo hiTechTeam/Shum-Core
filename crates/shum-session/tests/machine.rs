@@ -971,6 +971,33 @@ fn a_reaction_from_the_shared_set_reaches_the_contact() {
     assert!(mark.contains("crabUra"), "{mark}");
 }
 
+#[test]
+fn starting_to_type_goes_out_once_more_soon_after() {
+    let (mut anya, boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    let typing = |m: &mut Machine<Memory>| {
+        m.effects()
+            .into_iter()
+            .filter(|e| matches!(e, Effect::Publish { operation: Some(op), .. } if op.starts_with("typing:")))
+            .count()
+    };
+    ok(&mut anya, json!({"command":"focus","contact":boris_id}));
+    anya.effects();
+    ok(
+        &mut anya,
+        json!({"command":"typing","contact":boris_id,"active":true}),
+    );
+    assert_eq!(typing(&mut anya), 1);
+    anya.tick();
+    assert_eq!(typing(&mut anya), 0, "not yet");
+    std::thread::sleep(std::time::Duration::from_millis(1_300));
+    anya.tick();
+    assert_eq!(typing(&mut anya), 1, "once more");
+    std::thread::sleep(std::time::Duration::from_millis(1_300));
+    anya.tick();
+    assert_eq!(typing(&mut anya), 0, "only once");
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

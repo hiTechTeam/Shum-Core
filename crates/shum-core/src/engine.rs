@@ -1241,6 +1241,21 @@ impl Engine {
         }
         actions
     }
+    /// Whether typing to `id` was last said to be going on.
+    pub fn last_typing_active(&self, id: &str) -> bool {
+        self.last_typing.get(id).is_some_and(|(active, _)| *active)
+    }
+    /// Sends typing to `id` once more while it lasts: the first signal can
+    /// be lost while a Bluetooth link is still being set up.
+    pub fn repeat_typing(&mut self, id: &str, c: &Context<'_>) -> Result<Vec<Action>> {
+        if self.inbox.foreground_contact.as_deref() != Some(id)
+            || !self.last_typing.get(id).is_some_and(|(active, _)| *active)
+        {
+            return Ok(vec![]);
+        }
+        self.last_typing.remove(id);
+        self.set_typing(id, true, c)
+    }
     pub fn set_typing(&mut self, id: &str, active: bool, c: &Context<'_>) -> Result<Vec<Action>> {
         let peer = self.contact(id, true)?;
         self.keys(&c.keys)?;
