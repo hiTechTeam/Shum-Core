@@ -1020,7 +1020,23 @@ impl<H: Host> Machine<H> {
                 }
                 return Ok(json!({ "id": message }));
             }
-            Request::Broadcast { text: note, reply } => {
+            Request::Broadcast {
+                text: note,
+                reply,
+                sticker,
+            } => {
+                // A sticker goes with its emoji and word as the text.
+                let (note, sticker) = match sticker {
+                    Some(name) => {
+                        let known = shum_core::pool::sticker(&name)
+                            .ok_or_else(|| text("Такого стикера нет"))?;
+                        (
+                            format!("{} {}", known.emoji, known.word),
+                            Some(known.id.to_owned()),
+                        )
+                    }
+                    None => (note, None),
+                };
                 if shum_core::card::trim(&note).is_empty()
                     || note.len() > shum_core::public::MAX_TEXT
                 {
@@ -1031,7 +1047,11 @@ impl<H: Host> Machine<H> {
                     r.text = r.text.chars().take(200).collect();
                     r
                 });
-                let id = self.public_event(PublicBody::Note { text: note, reply })?;
+                let id = self.public_event(PublicBody::Note {
+                    text: note,
+                    reply,
+                    sticker,
+                })?;
                 return Ok(json!({ "id": id }));
             }
             Request::PublicReaction {

@@ -28,6 +28,10 @@ pub enum PublicBody {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<Reply>,
+        /// A sticker by its name in Shum's sets; `text` holds its emoji and
+        /// word for clients that do not draw it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sticker: Option<String>,
     },
     /// The sender's one reaction on a note; none takes it back.
     Reaction {
@@ -87,8 +91,14 @@ impl PublicEvent {
             return Err(Error::Invalid("public event id"));
         }
         let valid = match &self.body {
-            PublicBody::Note { text, reply } => {
-                !crate::card::trim(text).is_empty()
+            PublicBody::Note {
+                text,
+                reply,
+                sticker,
+            } => {
+                sticker.as_ref().is_none_or(|s| {
+                    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric())
+                }) && !crate::card::trim(text).is_empty()
                     && text.len() <= MAX_TEXT
                     && reply.as_ref().is_none_or(|r| {
                         short_id(&r.message_id)

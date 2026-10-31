@@ -505,6 +505,7 @@ fn a_public_note_crosses_the_mesh_with_its_author_card() {
     let note = shum_core::public::PublicBody::Note {
         text: "Всем привет!".into(),
         reply: None,
+        sticker: None,
     };
     let sent = a.broadcast("note-1".into(), note.clone(), 1000).unwrap();
     let got = line(
@@ -540,6 +541,7 @@ fn a_public_note_signed_by_someone_else_is_refused() {
         shum_core::public::PublicBody::Note {
             text: "fake".into(),
             reply: None,
+            sticker: None,
         },
         ac,
     )

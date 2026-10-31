@@ -75,7 +75,11 @@ pub fn apply(
     let chat = &mut state["publicChat"];
     let sender = card.id();
     let changed = match body {
-        PublicBody::Note { text, reply } => {
+        PublicBody::Note {
+            text,
+            reply,
+            sticker,
+        } => {
             if chat["retracted"].get(key(&sender, id)).is_some() {
                 return false;
             }
@@ -96,6 +100,10 @@ pub fn apply(
             });
             if let Some(reply) = reply {
                 note["reply"] = serde_json::to_value(reply).unwrap_or_default();
+            }
+            // Only a sticker this version can draw; otherwise the text shows.
+            if let Some(sticker) = sticker.as_deref().and_then(shum_core::pool::sticker) {
+                note["sticker"] = sticker.id.into();
             }
             notes.push(note);
             notes.sort_by_key(|n| n["timestamp"].as_i64().unwrap_or(0));

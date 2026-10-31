@@ -1028,6 +1028,20 @@ fn a_sticker_arrives_with_its_words_for_older_clients() {
     );
 }
 
+#[test]
+fn a_sticker_goes_to_the_open_chat_with_its_words() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    ok(
+        &mut anya,
+        json!({"command":"broadcast","sticker":"crabUra"}),
+    );
+    mesh(&mut anya, &mut boris);
+    let note = boris.snapshot()["publicChat"][0].clone();
+    assert_eq!(note["sticker"], "crabUra", "{note}");
+    assert_eq!(note["text"], "🎉 ура");
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

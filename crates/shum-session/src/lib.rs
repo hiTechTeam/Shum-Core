@@ -160,10 +160,14 @@ pub enum Request {
     },
     /// Writes to the open chat with everyone nearby over Bluetooth.
     Broadcast {
+        #[serde(default)]
         text: String,
         /// The note this one answers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<shum_core::packet::Reply>,
+        /// A sticker from Shum's sets by its name, in place of the text.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sticker: Option<String>,
     },
     /// Sets the own reaction on a note in the open chat; none takes it back.
     PublicReaction {
