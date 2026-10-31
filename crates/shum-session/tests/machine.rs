@@ -944,6 +944,33 @@ fn a_deleted_photo_leaves_storage_on_both_sides() {
     assert!(!boris.host.photos.contains_key(&id));
 }
 
+#[test]
+fn a_reaction_from_the_shared_set_reaches_the_contact() {
+    let (mut anya, mut boris) = chatting();
+    let boris_id = boris.host.keys.owner_id();
+    ok(
+        &mut anya,
+        json!({"command":"send","contact":boris_id,"text":"Ура"}),
+    );
+    let id = anya
+        .engine
+        .outbox
+        .messages
+        .last()
+        .unwrap()
+        .envelope
+        .id
+        .clone();
+    relay(&mut anya, &mut boris);
+    ok(
+        &mut boris,
+        json!({"command":"reaction","message":id,"reaction":"crabUra"}),
+    );
+    relay(&mut boris, &mut anya);
+    let mark = anya.snapshot()["reactions"].to_string();
+    assert!(mark.contains("crabUra"), "{mark}");
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

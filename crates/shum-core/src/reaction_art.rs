@@ -1,5 +1,6 @@
-//! Pixel artwork of the eight reactions, matching ShumReactionArt.swift
-//! (12 x 12). Clients choose the size; names are the client's words.
+//! Pixel artwork of the first eight reactions, matching ShumReactionArt.swift
+//! (12 x 12). Clients choose the size; names are the client's words. The
+//! whole set, these eight redrawn, is in `pool`.
 use crate::packet::ReactionKind;
 
 /// Reactions in picker order.
@@ -165,6 +166,8 @@ pub fn art(kind: ReactionKind) -> ([&'static str; 12], &'static [(u8, u32)]) {
                 (b'H', 0xE59A1C),
             ],
         ),
+        // Newer reactions have no 12 x 12 picture.
+        _ => (["............"; 12], &[]),
     }
 }
 

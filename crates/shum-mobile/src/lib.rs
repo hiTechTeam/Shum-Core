@@ -419,6 +419,37 @@ pub fn command_schema_version() -> u64 {
 }
 
 /// The v1 pixel avatar as 36x36 RGBA bytes.
+/// A reaction's picture from the shared set as RGBA bytes, row by row; its
+/// side is the square root of a quarter of the length. Empty for a name
+/// the set does not have.
+#[uniffi::export]
+pub fn reaction_pixels(kind: String) -> Vec<u8> {
+    serde_json::from_value(serde_json::Value::String(kind))
+        .map(|kind| shum_core::pool::rgba(kind).1)
+        .unwrap_or_default()
+}
+
+/// The shared set of reactions in order, as JSON: `[{"section", "kinds"}]`.
+#[uniffi::export]
+pub fn reaction_pool() -> String {
+    let mut sections: Vec<(shum_core::pool::Section, Vec<serde_json::Value>)> = Vec::new();
+    for kind in shum_core::pool::ORDER {
+        let section = shum_core::pool::section(kind);
+        let name = serde_json::to_value(kind).unwrap_or_default();
+        match sections.last_mut() {
+            Some((last, kinds)) if *last == section => kinds.push(name),
+            _ => sections.push((section, vec![name])),
+        }
+    }
+    serde_json::Value::Array(
+        sections
+            .into_iter()
+            .map(|(section, kinds)| serde_json::json!({"section": section.name(), "kinds": kinds}))
+            .collect(),
+    )
+    .to_string()
+}
+
 #[uniffi::export]
 pub fn avatar_pixels(seed: u64) -> Vec<u8> {
     shum_core::avatar::render(seed)

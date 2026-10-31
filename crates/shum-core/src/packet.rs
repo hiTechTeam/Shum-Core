@@ -248,7 +248,7 @@ impl ControlFields for RetractFields {
     }
 }
 pub type Retract = Control<RetractFields>;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReactionKind {
     Heart,
@@ -259,6 +259,44 @@ pub enum ReactionKind {
     Coffin,
     Hundred,
     Horror,
+    // The shared set from here on (see `pool`); clients before it ignore them.
+    Adore,
+    Wow,
+    Sad,
+    Angry,
+    Hmm,
+    Party,
+    Wave,
+    Ok,
+    Peace,
+    Crossed,
+    Rock,
+    Shaka,
+    Fist,
+    Clap,
+    Ghost,
+    Person,
+    Cool,
+    Eyes,
+    CrabLyublyu,
+    CrabObnimayu,
+    CrabPlachu,
+    CrabShok,
+    CrabUra,
+    CrabIcon,
+    CatLyublyu,
+    CatRyba,
+    CatEda,
+    CatKorobka,
+    CatTygydyk,
+    CatShshsh,
+    CatBuhanka,
+    CatUps,
+    CatIcon,
+    BunZlyus,
+    BunPlachu,
+    BunIcon,
+    FrogIcon,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReactionFields {
