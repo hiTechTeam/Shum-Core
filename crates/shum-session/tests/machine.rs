@@ -1042,6 +1042,37 @@ fn a_sticker_goes_to_the_open_chat_with_its_words() {
     assert_eq!(note["text"], "🎉 ура");
 }
 
+#[test]
+fn a_new_name_reaches_the_contact_both_ways() {
+    let (mut anya, mut boris) = chatting();
+    let (anya_id, boris_id) = (anya.host.keys.owner_id(), boris.host.keys.owner_id());
+    let name = |m: &Machine<Memory>, id: &str| {
+        m.snapshot()["contacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .map(|c| c["card"]["name"].clone())
+    };
+    // Open chats on both sides, as on the phones.
+    ok(&mut anya, json!({"command":"focus","contact":boris_id}));
+    ok(&mut boris, json!({"command":"focus","contact":anya_id}));
+    anya.tick();
+    boris.tick();
+    relay(&mut anya, &mut boris);
+    ok(&mut anya, json!({"command":"profile","name":"Аня 2"}));
+    relay(&mut anya, &mut boris);
+    assert_eq!(name(&boris, &anya_id), Some(json!("Аня 2")));
+    // What iOS reads: the stored state, not only the snapshot.
+    let stored = boris.host.state()["contacts"].to_string();
+    assert!(stored.contains("Аня 2"), "{stored}");
+    ok(&mut boris, json!({"command":"profile","name":"Борис 2"}));
+    anya.tick();
+    boris.tick();
+    relay(&mut anya, &mut boris);
+    assert_eq!(name(&anya, &boris_id), Some(json!("Борис 2")));
+}
+
 fn jpeg(size: usize) -> Vec<u8> {
     let mut v: Vec<u8> = (0..size).map(|i| (i * 7 % 251) as u8).collect();
     v[..3].copy_from_slice(&[0xff, 0xd8, 0xff]);

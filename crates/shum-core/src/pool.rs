@@ -24,6 +24,27 @@ pub fn sticker(id: &str) -> Option<&'static Sticker> {
         .find(|s| s.id == id)
 }
 
+/// The sets as JSON, reactions first: `[{"section", "title", "reactions",
+/// "kinds": [{"id", "emoji", "word"}]}]`; titles are Russian, for clients to
+/// translate.
+pub fn sets_json() -> String {
+    serde_json::Value::Array(
+        SETS.iter()
+            .map(|set| {
+                serde_json::json!({
+                    "section": set.id,
+                    "title": set.title,
+                    "reactions": set.reactions,
+                    "kinds": set.stickers.iter().map(|s| serde_json::json!({
+                        "id": s.id, "emoji": s.emoji, "word": s.word
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
 /// A picture as RGBA bytes, row by row.
 pub fn rgba(art: &Art) -> Vec<u8> {
     let symbols =

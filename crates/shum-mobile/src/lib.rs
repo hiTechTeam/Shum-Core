@@ -444,22 +444,7 @@ pub fn sticker_set_pixels(set: String) -> Vec<u8> {
 /// to translate.
 #[uniffi::export]
 pub fn reaction_pool() -> String {
-    serde_json::Value::Array(
-        shum_core::stickers::SETS
-            .iter()
-            .map(|set| {
-                serde_json::json!({
-                    "section": set.id,
-                    "title": set.title,
-                    "reactions": set.reactions,
-                    "kinds": set.stickers.iter().map(|s| serde_json::json!({
-                        "id": s.id, "emoji": s.emoji, "word": s.word
-                    })).collect::<Vec<_>>(),
-                })
-            })
-            .collect(),
-    )
-    .to_string()
+    shum_core::pool::sets_json()
 }
 
 #[uniffi::export]

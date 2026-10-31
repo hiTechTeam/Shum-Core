@@ -26,6 +26,32 @@ pub fn reaction_pixels(kind: &str) -> Result<Vec<u8>, JsError> {
         .collect())
 }
 
+/// A sticker's or reaction's picture from Shum's sets as RGBA bytes; its
+/// side is the square root of a quarter of the length. Empty for a name no
+/// set has.
+#[wasm_bindgen(js_name = stickerPixels)]
+pub fn sticker_pixels(id: &str) -> Vec<u8> {
+    shum_core::pool::sticker(id)
+        .map(|sticker| shum_core::pool::rgba(&sticker.art))
+        .unwrap_or_default()
+}
+
+/// A set's picture for a list of sets, as RGBA bytes.
+#[wasm_bindgen(js_name = stickerSetPixels)]
+pub fn sticker_set_pixels(set: &str) -> Vec<u8> {
+    shum_core::stickers::SETS
+        .iter()
+        .find(|s| s.id == set)
+        .map(|s| shum_core::pool::rgba(&s.icon))
+        .unwrap_or_default()
+}
+
+/// Shum's sets as JSON, reactions first, as iOS gets them.
+#[wasm_bindgen(js_name = stickerSets)]
+pub fn sticker_sets() -> String {
+    shum_core::pool::sets_json()
+}
+
 /// Which cells of the 3x3 "in chat" mark are lit for a contact: nine 0/1.
 #[wasm_bindgen(js_name = presencePattern)]
 pub fn presence_pattern(seed: &str) -> Vec<u8> {
