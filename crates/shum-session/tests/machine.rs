@@ -1135,3 +1135,24 @@ fn a_note_counts_who_saw_it_on_screen() {
     mesh(&mut anya, &mut boris);
     assert_eq!(views(&anya), 2);
 }
+
+#[test]
+fn typing_and_presence_in_the_open_chat_tell_clients_to_redraw() {
+    let mut anya = profile("Аня");
+    let mut boris = profile("Борис");
+    let before = boris.nearby_changes;
+    ok(&mut anya, json!({"command":"public_typing","active":true}));
+    mesh(&mut anya, &mut boris);
+    assert!(boris.nearby_changes > before, "typing shows at once");
+    let typing = boris.nearby_changes;
+    ok(
+        &mut anya,
+        json!({"command":"public_presence","online":true}),
+    );
+    mesh(&mut anya, &mut boris);
+    // Typing already counted Anya as there: nothing new to show.
+    assert_eq!(boris.nearby_changes, typing);
+    ok(&mut anya, json!({"command":"public_typing","active":false}));
+    mesh(&mut anya, &mut boris);
+    assert!(boris.nearby_changes > typing, "the stop shows too");
+}

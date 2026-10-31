@@ -240,7 +240,8 @@ pub struct Machine<H: Host> {
     client: Map<String, Value>,
     nearby: HashMap<String, NearbyPeer>,
     /// Grows whenever someone comes or goes nearby or their distance
-    /// changes, which stores nothing, so clients know to show it.
+    /// changes, or someone starts or stops typing in the open chat or opens
+    /// or leaves it: all stored nowhere, so clients know to show it.
     pub nearby_changes: u64,
     /// Bluetooth status for snapshots; native clients keep it up to date.
     pub bluetooth: Value,
@@ -1594,12 +1595,17 @@ impl<H: Host> Machine<H> {
                 let author = event.card.id();
                 // Anything from someone in the open chat says they are there.
                 if author != self.engine.inbox.own.id() {
-                    if matches!(event.body, PublicBody::Presence { online: false }) {
-                        self.public_present.remove(&author);
+                    let shown = if matches!(event.body, PublicBody::Presence { online: false }) {
+                        self.public_present.remove(&author).is_some()
                     } else {
                         let until = now() + PUBLIC_PRESENCE_SHOWN_MS;
                         self.public_present
-                            .insert(author.clone(), (event.card.clone(), until));
+                            .insert(author.clone(), (event.card.clone(), until))
+                            .is_none()
+                    };
+                    // Only arriving or leaving shows; a repeat changes nothing.
+                    if shown {
+                        self.nearby_changes += 1;
                     }
                 }
                 if let PublicBody::Seen { notes } = &event.body {
@@ -1613,17 +1619,24 @@ impl<H: Host> Machine<H> {
                 }
                 if let PublicBody::Typing { active } = event.body {
                     if author != self.engine.inbox.own.id() {
-                        if active {
+                        let shown = if active {
                             let until = now() + PUBLIC_TYPING_SHOWN_MS;
-                            self.public_typing.insert(author, (event.card, until));
+                            self.public_typing
+                                .insert(author, (event.card, until))
+                                .is_none()
                         } else {
-                            self.public_typing.remove(&author);
+                            self.public_typing.remove(&author).is_some()
+                        };
+                        if shown {
+                            self.nearby_changes += 1;
                         }
                     }
                     return Ok(());
                 }
-                if matches!(event.body, PublicBody::Note { .. }) {
-                    self.public_typing.remove(&author);
+                if matches!(event.body, PublicBody::Note { .. })
+                    && self.public_typing.remove(&author).is_some()
+                {
+                    self.nearby_changes += 1;
                 }
                 if matches!(event.body, PublicBody::Note { .. })
                     && crate::public::contains(self.host.state(), &author, &event.id)
@@ -1671,8 +1684,12 @@ impl<H: Host> Machine<H> {
         }
         self.send_public_copies();
         let time = now();
+        let before = self.public_typing.len() + self.public_present.len();
         self.public_typing.retain(|_, (_, until)| *until > time);
         self.public_present.retain(|_, (_, until)| *until > time);
+        if self.public_typing.len() + self.public_present.len() != before {
+            self.nearby_changes += 1;
+        }
         if self
             .public_here
             .is_some_and(|at| time - at >= PUBLIC_PRESENCE_REPEAT_MS)
