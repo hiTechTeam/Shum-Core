@@ -390,6 +390,7 @@ impl Engine {
                         let _ = self.add_contact(recipient);
                     }
                     self.outbox.mirror(copy);
+                    self.settle_sent();
                 }
             }
             if let Some(read) = packet.own_read.filter(|r| r.validate().is_ok()) {
@@ -869,6 +870,48 @@ impl Engine {
     }
     /// An invitation sent or answered on another of this profile's devices:
     /// this device takes the same step, unless it already took a newer one.
+    /// A message to someone is sent only once they are accepted, so one
+    /// sent after this device's last invitation step with them, here or on
+    /// another device of the profile, means they were accepted since. Fixes
+    /// answers that never reached this device.
+    pub fn settle_sent(&mut self) {
+        let mut latest: HashMap<String, (i64, String)> = HashMap::new();
+        for m in &self.outbox.messages {
+            let e = &m.envelope;
+            let id = e.recipient.id();
+            if latest.get(&id).is_none_or(|(t, _)| e.timestamp > *t) {
+                latest.insert(id, (e.timestamp, e.id.clone()));
+            }
+        }
+        for (id, (at, message)) in latest {
+            let stale = self
+                .inbox
+                .invitations
+                .get(&id)
+                .is_none_or(|s| s.phase != Phase::Accepted && at > s.updated_at);
+            if !stale || self.inbox.blocked.contains(&id) {
+                continue;
+            }
+            let Some(card) = self
+                .inbox
+                .requests
+                .remove(&id)
+                .or_else(|| self.inbox.contacts.get(&id).cloned())
+            else {
+                continue;
+            };
+            self.inbox.contacts.insert(id.clone(), card);
+            self.inbox.outgoing_requests.remove(&id);
+            self.inbox.invitations.insert(
+                id,
+                InvitationState {
+                    phase: Phase::Accepted,
+                    updated_at: at,
+                    event_id: format!("sent-{message}"),
+                },
+            );
+        }
+    }
     fn apply_own_invitation(&mut self, c: InvitationControl) {
         let id = c.recipient.id();
         if self

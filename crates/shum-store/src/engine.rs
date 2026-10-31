@@ -329,6 +329,7 @@ pub fn restore(state: &Value, signing: &Secret32) -> Result<Engine> {
             });
         }
     }
+    engine.settle_sent();
     Ok(engine)
 }
 fn set_optional(row: &mut Value, key: &str, value: Option<Value>) {

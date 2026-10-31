@@ -1011,3 +1011,90 @@ fn a_profile_on_two_devices_keeps_the_latest_edit() {
     assert_eq!(eb.inbox.contacts[&a.card.id()].avatar_seed, Some(55));
     assert_eq!(eb.inbox.contacts[&a.card.id()].profile_revision, Some(4));
 }
+#[test]
+fn a_message_sent_from_another_device_settles_a_missed_answer() {
+    let a = Identity::new(1, "Аня");
+    let b = Identity::new(10, "Игорь");
+    let routes = Routes {
+        internet: true,
+        ..Routes::default()
+    };
+    let now = 1800000000000;
+    let mut phone = Engine::new(a.card.clone()).unwrap();
+    let mut laptop = Engine::new(a.card.clone()).unwrap();
+    let mut igor = Engine::new(b.card.clone()).unwrap();
+    igor.add_contact(a.card.clone()).unwrap();
+    let invite = igor
+        .invitation(
+            &a.card.id(),
+            InvitationAction::Request,
+            None,
+            &b.context(&routes, now, &id(1)),
+        )
+        .unwrap();
+    let request = packet(&invite, |p| p.invitation.is_some());
+    for device in [&mut phone, &mut laptop] {
+        device
+            .receive(
+                request.clone(),
+                Source::Nostr(&b.card.nostr_key),
+                &a.context(&routes, now + 1, &id(2)),
+            )
+            .unwrap();
+    }
+    // The phone accepts; the laptop never hears of it.
+    let answer = phone
+        .invitation(
+            &b.card.id(),
+            InvitationAction::Accept,
+            None,
+            &a.context(&routes, now + 2, &id(3)),
+        )
+        .unwrap();
+    igor.receive(
+        packet(&answer, |p| p.invitation.is_some()),
+        Source::Nostr(&a.card.nostr_key),
+        &b.context(&routes, now + 3, &id(4)),
+    )
+    .unwrap();
+    assert_eq!(laptop.inbox.phase(&b.card.id()), Phase::IncomingPending);
+
+    // A message the phone sends proves the answer.
+    let sent = phone
+        .send(
+            &b.card.id(),
+            "привет",
+            None,
+            &Secret32::new([80; 32]),
+            &a.context(&routes, now + 4, &id(5)),
+        )
+        .unwrap();
+    laptop
+        .receive(
+            packet(&sent, |p| p.own_copy.is_some()),
+            Source::Nostr(&a.card.nostr_key),
+            &a.context(&routes, now + 5, &id(6)),
+        )
+        .unwrap();
+    assert_eq!(laptop.inbox.phase(&b.card.id()), Phase::Accepted);
+    assert!(laptop.inbox.requests.is_empty());
+
+    // Igor's reply now reaches the laptop instead of being dropped.
+    let reply = igor
+        .send(
+            &a.card.id(),
+            "и тебе",
+            None,
+            &Secret32::new([81; 32]),
+            &b.context(&routes, now + 6, &id(7)),
+        )
+        .unwrap();
+    laptop
+        .receive(
+            packet(&reply, |p| p.envelope.is_some()),
+            Source::Nostr(&b.card.nostr_key),
+            &a.context(&routes, now + 7, &id(8)),
+        )
+        .unwrap();
+    assert!(laptop.inbox.messages.iter().any(|m| m.envelope.id == id(7)));
+}
