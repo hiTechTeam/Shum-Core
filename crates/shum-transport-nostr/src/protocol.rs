@@ -6,11 +6,35 @@ use serde_json::{json, Value};
 use shum_core::nostr::Event;
 
 pub const DEFAULT_RELAYS: &[&str] = &[
+    // Shum's own relay (nostr-rs-relay beside the push service).
+    "wss://relay.getshum.tech",
     "wss://nostr.oxtr.dev",
     "wss://soloco.nl",
     "wss://relay.snort.social",
     "wss://nostr.bitcoiner.social",
 ];
+/// The default list before Shum had its own relay.
+const EARLIER_DEFAULT_RELAYS: &[&str] = &[
+    "wss://nostr.oxtr.dev",
+    "wss://soloco.nl",
+    "wss://relay.snort.social",
+    "wss://nostr.bitcoiner.social",
+];
+
+/// The relays to use for a stored list. A profile that stored the earlier
+/// default list gets the current one, so nobody has to change a setting;
+/// a list someone chose stays as it is.
+pub fn current_relays(stored: Vec<String>) -> Vec<String> {
+    if stored
+        .iter()
+        .map(String::as_str)
+        .eq(EARLIER_DEFAULT_RELAYS.iter().copied())
+    {
+        DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect()
+    } else {
+        stored
+    }
+}
 pub const SUBSCRIPTION: &str = "shum-private-v1";
 /// Larger relay messages are dropped, by the socket or by [`read`].
 pub const MAX_MESSAGE: usize = 256 * 1024;

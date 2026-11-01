@@ -412,6 +412,15 @@ fn relay_json(effect: shum_transport_nostr::links::Effect) -> Option<Value> {
     })
 }
 
+/// The relays every client uses unless the person chooses others.
+#[uniffi::export]
+pub fn default_relays() -> Vec<String> {
+    shum_transport_nostr::DEFAULT_RELAYS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Shum-Core's version of the request API, for checks from Swift.
 #[uniffi::export]
 pub fn command_schema_version() -> u64 {

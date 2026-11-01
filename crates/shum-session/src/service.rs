@@ -170,7 +170,7 @@ pub async fn serve(
     let open = profiles.open(Some(id))?;
     let settings = &open.store.state()["cliSettings"];
     let relays: Vec<String> = if settings["relays"].is_array() {
-        serde_json::from_value(settings["relays"].clone())?
+        shum_transport_nostr::current_relays(serde_json::from_value(settings["relays"].clone())?)
     } else {
         shum_transport_nostr::DEFAULT_RELAYS
             .iter()

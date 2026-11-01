@@ -7,7 +7,7 @@ pub mod protocol;
 pub mod push;
 #[cfg(feature = "native")]
 mod relay;
-pub use protocol::DEFAULT_RELAYS;
+pub use protocol::{current_relays, DEFAULT_RELAYS};
 #[cfg(feature = "native")]
 pub use relay::{RelayPool, RelayUpdate};
 

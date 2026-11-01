@@ -143,3 +143,21 @@ fn relay_addresses_must_be_secure() {
     assert!(protocol::validate_inbox(&inbox()).is_ok());
     assert!(protocol::validate_inbox("zz").is_err());
 }
+
+#[test]
+fn profiles_with_the_earlier_default_relays_get_shums_own() {
+    let urls = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let earlier = urls(&[
+        "wss://nostr.oxtr.dev",
+        "wss://soloco.nl",
+        "wss://relay.snort.social",
+        "wss://nostr.bitcoiner.social",
+    ]);
+    let current = protocol::current_relays(earlier);
+    assert_eq!(current, urls(protocol::DEFAULT_RELAYS));
+    assert_eq!(current[0], "wss://relay.getshum.tech");
+    // A list someone chose stays, even one close to the earlier default.
+    let chosen = urls(&["wss://nostr.oxtr.dev", "wss://soloco.nl"]);
+    assert_eq!(protocol::current_relays(chosen.clone()), chosen);
+    assert_eq!(protocol::current_relays(current.clone()), current);
+}
