@@ -59,7 +59,8 @@ impl<H: Host> Driver<H> {
         pings: bool,
         now: u64,
     ) -> anyhow::Result<Self> {
-        let machine = Machine::new(host, push, client)?;
+        let mut machine = Machine::new(host, push, client)?;
+        machine.set_relay_list(urls.to_vec());
         let relays = Relays::new(urls, machine.inbox(), pings, now)?;
         Ok(Self {
             machine,

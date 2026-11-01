@@ -1432,3 +1432,17 @@ fn typing_and_presence_in_the_open_chat_tell_clients_to_redraw() {
     mesh(&mut anya, &mut boris);
     assert!(boris.nearby_changes > typing, "the stop shows too");
 }
+
+#[test]
+fn the_snapshot_lists_every_relay_and_the_connected_ones() {
+    let mut anya = profile("Аня");
+    let all = vec![
+        "wss://relay.getshum.tech".to_string(),
+        "wss://relay.example".to_string(),
+    ];
+    anya.set_relay_list(all.clone());
+    anya.set_relays(vec!["wss://relay.example".into()]);
+    let snapshot = anya.snapshot();
+    assert_eq!(snapshot["relayList"], json!(all));
+    assert_eq!(snapshot["relays"], json!(["wss://relay.example"]));
+}

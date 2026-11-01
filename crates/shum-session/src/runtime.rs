@@ -82,7 +82,8 @@ impl Session {
         client: serde_json::Map<String, Value>,
     ) -> Result<Self> {
         let push = push.map(PushClient::new).transpose()?;
-        let machine = Machine::new(profile, push.is_some(), client)?;
+        let mut machine = Machine::new(profile, push.is_some(), client)?;
+        machine.set_relay_list(relays.to_vec());
         let (pool, updates) = RelayPool::start(relays, machine.inbox())?;
         Ok(Self {
             machine,

@@ -276,6 +276,8 @@ pub struct Machine<H: Host> {
     /// Bluetooth status for snapshots; native clients keep it up to date.
     pub bluetooth: Value,
     relays: Vec<String>,
+    /// Every relay the session uses, connected or not, for clients to list.
+    relay_list: Vec<String>,
     push: bool,
     /// How long encounters nearby stay listed; each client chooses.
     encounter_retention: i64,
@@ -337,6 +339,7 @@ impl<H: Host> Machine<H> {
             typing_again: None,
             bluetooth: json!({"enabled":null,"scan":"starting","advertise":"starting"}),
             relays: Vec::new(),
+            relay_list: Vec::new(),
             push,
             encounter_retention: crate::directory::DEFAULT_RETENTION_MS,
             inflight: HashSet::new(),
@@ -404,6 +407,12 @@ impl<H: Host> Machine<H> {
     /// Relays with a working subscription, for routes and snapshots.
     pub fn set_relays(&mut self, connected: Vec<String>) {
         self.relays = connected;
+    }
+
+    /// Every relay the session uses; `relays` in snapshots stays the
+    /// connected ones, `relayList` lists them all in this order.
+    pub fn set_relay_list(&mut self, all: Vec<String>) {
+        self.relay_list = all;
     }
 
     /// How long encounters nearby stay listed, in milliseconds; each client
@@ -859,7 +868,7 @@ impl<H: Host> Machine<H> {
             .map(|(id, card)| json!({ "id": id, "card": card }))
             .collect();
         blocked.sort_by(by_name);
-        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicPresent":shown(&self.public_present),"publicTyping":shown(&self.public_typing),"relays":self.relays,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
+        let mut snapshot = json!({"profile":self.host.profile(),"card":own,"contacts":contacts,"blocked":blocked,"messages":messages,"events":crate::timeline::stored(self.host.state(), &self.engine),"reactions":reactions,"encounters":crate::directory::encounters(self.host.state(),&self.engine.inbox.blocked,now(),self.encounter_retention),"pins":crate::directory::pins(self.host.state()),"publicChat":crate::public::notes(self.host.state(),now()),"publicPresent":shown(&self.public_present),"publicTyping":shown(&self.public_typing),"relays":self.relays,"relayList":self.relay_list,"bluetooth":self.bluetooth,"pushConfigured":self.push,"pushError":self.push_error,"pushLast":self.push_last,"error":self.last_error,"clientCommandVersion":crate::COMMAND_SCHEMA_VERSION});
         if let Some(object) = snapshot.as_object_mut() {
             object.extend(self.client.clone());
         }
