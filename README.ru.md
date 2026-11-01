@@ -8,7 +8,7 @@
 
 Черновик v1 реализован и сверяется с тестовыми примерами Swift. На macOS с iPhone проверены поиск по Bluetooth, приглашения, сообщения и прочтение. На Linux и Windows есть поиск, но GATT-сервер и приёмка платформ ещё впереди.
 
-Несколько устройств одного профиля, синхронизация истории и релеи профиля входят в будущую v1 stable. Привязки Swift и Kotlin используют UniFFI; переход iOS пока не завершён. План: [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
+Несколько устройств одного профиля, синхронизация истории и реле профиля входят в будущую v1 stable. Привязки Swift и Kotlin используют UniFFI; переход iOS пока не завершён. План: [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
 
 ## Пакеты
 
@@ -21,7 +21,7 @@
 | `shum-transport-ble` | Поиск, GATT, Noise и Bluetooth-сетка |
 | `shum-store` | Зашифрованная SQLite и ключи профилей |
 | `shum-session` | Работающий профиль для любого клиента: одна сессия, которая работает и в нативных клиентах (tokio, SQLite, Bluetooth), и в браузере |
-| `shum-web` | Shum-Core для браузера (WebAssembly): та же сессия, релеи через WebSocket, профили зашифрованными записями в IndexedDB; сборка — `scripts/build-web.sh` |
+| `shum-web` | Shum-Core для браузера (WebAssembly): та же сессия, реле через WebSocket, профили зашифрованными записями в IndexedDB; сборка — `scripts/build-web.sh` |
 
 [Shum CLI](https://github.com/hiTechTeam/Shum-CLI) подключает ядро напрямую. Мобильные, десктопные и браузерные клиенты находятся на разных этапах разработки.
 
