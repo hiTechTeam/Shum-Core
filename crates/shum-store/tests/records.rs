@@ -132,3 +132,22 @@ fn tampered_or_foreign_records_are_rejected() {
         "wrong key"
     );
 }
+
+#[test]
+fn photos_are_sealed_under_an_index_that_reveals_nothing() {
+    let owner = "ab".repeat(32);
+    let (records, _) =
+        Records::create(&owner, Secret32::new([7; 32]), &empty_state(&owner)).unwrap();
+    let jpeg = b"\xff\xd8 photo \xff\xd9";
+    let (index, payload) = records.seal_photo("message-1", jpeg).unwrap();
+    assert_eq!(index, records.photo_index("message-1"));
+    assert!(!index.contains("message-1"));
+    assert!(!payload.windows(5).any(|w| w == b"photo"));
+    assert_eq!(records.open_photo(&index, &payload).unwrap(), jpeg);
+    // A payload moved under another photo's index does not open.
+    let other = records.photo_index("message-2");
+    assert!(records.open_photo(&other, &payload).is_err());
+    let (foreign, _) =
+        Records::create(&owner, Secret32::new([8; 32]), &empty_state(&owner)).unwrap();
+    assert!(foreign.open_photo(&index, &payload).is_err());
+}

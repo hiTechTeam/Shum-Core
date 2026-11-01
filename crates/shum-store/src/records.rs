@@ -27,6 +27,8 @@ struct Row {
     value: Value,
 }
 type Rows = BTreeMap<(String, String), Row>;
+/// Bucket name for sealing photos, kept apart from the records.
+const PHOTOS: &str = "photos";
 
 /// What a commit writes and deletes. Backends apply it atomically.
 pub struct Plan {
@@ -249,6 +251,27 @@ impl Records {
     #[cfg(feature = "native")]
     pub(crate) fn key(&self) -> &Secret32 {
         &self.key
+    }
+
+    /// Keyed index under which the photo of the message `id` is stored, so
+    /// stored IDs reveal nothing.
+    pub fn photo_index(&self, id: &str) -> String {
+        codec::index_id(self.key.expose(), PHOTOS, id)
+    }
+
+    /// The JPEG of the message `id` sealed like the records: its index and
+    /// the payload to keep under it.
+    pub fn seal_photo(&self, id: &str, jpeg: &[u8]) -> Result<(String, Vec<u8>)> {
+        let index = self.photo_index(id);
+        let aad = codec::aad(PHOTOS, &index, 0);
+        let payload = codec::seal(self.key.expose(), &codec::random_nonce()?, jpeg, &aad)?;
+        Ok((index, payload))
+    }
+
+    /// Opens a payload [`Records::seal_photo`] made under `index`.
+    pub fn open_photo(&self, index: &str, payload: &[u8]) -> Result<Vec<u8>> {
+        let aad = codec::aad(PHOTOS, index, 0);
+        Ok(codec::open(self.key.expose(), payload, &aad)?.to_vec())
     }
 
     /// Brings a loaded state up to the current layout, as every open does.

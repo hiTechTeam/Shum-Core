@@ -4,6 +4,7 @@
 //! strictly in order: storage writes come first, so nothing is sent before
 //! the state that caused it is stored.
 use crate::{error, invitation_json, relays::effect_json, Stored, WebProfile};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 use shum_session::{
     driver::{push_request, quote_seeds, Driver, Output},
@@ -11,6 +12,7 @@ use shum_session::{
     now, Request,
 };
 use shum_store::{keys::ProfileKeys, records::Records};
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 /// Storage of an open browser profile: the records live in memory and
@@ -22,6 +24,8 @@ struct WebHost {
     records: Records,
     writes: Vec<Value>,
     renamed: bool,
+    /// Sealed photos by their keyed index, as the page keeps them.
+    photos: HashMap<String, Vec<u8>>,
 }
 
 impl Host for WebHost {
@@ -51,6 +55,28 @@ impl Host for WebHost {
             password,
             created_at,
         )?)
+    }
+    fn put_photo(&mut self, id: &str, jpeg: &[u8]) -> anyhow::Result<()> {
+        let (index, payload) = self.records.seal_photo(id, jpeg)?;
+        self.writes
+            .push(json!({"type": "photo", "id": index, "payload": STANDARD.encode(&payload)}));
+        self.photos.insert(index, payload);
+        Ok(())
+    }
+    fn photo(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let index = self.records.photo_index(id);
+        self.photos
+            .get(&index)
+            .map(|payload| Ok(self.records.open_photo(&index, payload)?))
+            .transpose()
+    }
+    fn delete_photo(&mut self, id: &str) -> anyhow::Result<()> {
+        let index = self.records.photo_index(id);
+        if self.photos.remove(&index).is_some() {
+            self.writes
+                .push(json!({"type": "photo", "id": index, "payload": null}));
+        }
+        Ok(())
     }
     fn renamed(&mut self) -> anyhow::Result<()> {
         let name = self.records.state()["ownProfileCard"]["name"]
@@ -92,12 +118,20 @@ impl WebSession {
             records,
             writes: Vec::new(),
             renamed: false,
+            photos: HashMap::new(),
         };
         let mut client = serde_json::Map::new();
         client.insert("owner".into(), "browser".into());
         // The browser cannot send WebSocket pings, so the relays get none.
         let driver = Driver::new(host, push, client, &relays, false, now as u64).map_err(error)?;
         Ok(Self { driver })
+    }
+
+    /// A photo the page stored earlier (`photo` effect); call for each one
+    /// before anything else.
+    #[wasm_bindgen(js_name = addPhoto)]
+    pub fn add_photo(&mut self, id: String, payload: Vec<u8>) {
+        self.driver.machine.host.photos.insert(id, payload);
     }
 
     pub fn snapshot(&mut self) -> String {
@@ -159,7 +193,8 @@ impl WebSession {
     }
 
     /// What the page does now, in this order, as a JSON array: `store`
-    /// (write, delete) writes to keep first; `renamed` (name); the relay
+    /// (write, delete) and `photo` (id, payload in base64 or null to
+    /// delete) writes to keep first; `renamed` (name); the relay
     /// effects of `WebRelays.effects`; `reply` (id, ok or error); `push`
     /// (event, path, headers, body in base64) to POST to the push service.
     pub fn effects(&mut self) -> String {

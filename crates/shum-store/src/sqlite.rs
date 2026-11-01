@@ -16,8 +16,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-/// Bucket name for sealing photos, kept apart from the records.
-const PHOTOS: &str = "photos";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CommitStats {
     pub transactions: u64,
@@ -206,14 +204,7 @@ impl Store {
     }
     /// Stores the JPEG of the message `id`, sealed like the records.
     pub fn put_photo(&self, id: &str, jpeg: &[u8]) -> Result<()> {
-        let key = self.records.key().expose();
-        let index = codec::index_id(key, PHOTOS, id);
-        let payload = codec::seal(
-            key,
-            &codec::random_nonce()?,
-            jpeg,
-            &codec::aad(PHOTOS, &index, 0),
-        )?;
+        let (index, payload) = self.records.seal_photo(id, jpeg)?;
         self.connection.execute(
             "INSERT INTO photos(id,payload) VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
             params![index, payload],
@@ -222,8 +213,7 @@ impl Store {
     }
     /// The JPEG of the message `id`, if this device has it.
     pub fn photo(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let key = self.records.key().expose();
-        let index = codec::index_id(key, PHOTOS, id);
+        let index = self.records.photo_index(id);
         let payload: Option<Vec<u8>> = self
             .connection
             .query_row(
@@ -233,11 +223,11 @@ impl Store {
             )
             .optional()?;
         payload
-            .map(|p| Ok(codec::open(key, &p, &codec::aad(PHOTOS, &index, 0))?.to_vec()))
+            .map(|p| self.records.open_photo(&index, &p))
             .transpose()
     }
     pub fn delete_photo(&self, id: &str) -> Result<()> {
-        let index = codec::index_id(self.records.key().expose(), PHOTOS, id);
+        let index = self.records.photo_index(id);
         self.connection
             .execute("DELETE FROM photos WHERE id=?1", params![index])?;
         Ok(())
