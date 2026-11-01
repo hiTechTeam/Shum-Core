@@ -43,7 +43,7 @@ cargo fmt --all -- --check
 
 ## Документация
 
-[API ядра](docs/core-api.md) · [Хранилище](docs/storage.md) · [Протокол и примеры](https://github.com/hiTechTeam/Shum-Protocol) · [Issues](https://github.com/hiTechTeam/Shum-Core/issues)
+[API ядра](docs/core-api.md) · [Хранилище](docs/storage.md) · [Дорожная карта](docs/roadmap.md) · [Протокол и примеры](https://github.com/hiTechTeam/Shum-Protocol) · [Issues](https://github.com/hiTechTeam/Shum-Core/issues)
 
 ## Лицензия
 

@@ -43,7 +43,7 @@ Strict Ed25519 validation and Noise replay rejection are approved compatibility 
 
 ## Documentation
 
-[Core API](docs/core-api.md) · [Storage](docs/storage.md) · [Protocol and vectors](https://github.com/hiTechTeam/Shum-Protocol) · [Issues](https://github.com/hiTechTeam/Shum-Core/issues)
+[Core API](docs/core-api.md) · [Storage](docs/storage.md) · [Roadmap (Russian)](docs/roadmap.md) · [Protocol and vectors](https://github.com/hiTechTeam/Shum-Protocol) · [Issues](https://github.com/hiTechTeam/Shum-Core/issues)
 
 ## License
 
