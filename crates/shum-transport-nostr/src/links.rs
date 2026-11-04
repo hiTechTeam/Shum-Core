@@ -20,6 +20,10 @@ const CONNECT_TIMEOUT: u64 = 8_000;
 const ACK_TIMEOUT: u64 = 10_000;
 const PING_EVERY: u64 = 20_000;
 const SILENCE_LIMIT: u64 = 60_000;
+/// How often an open relay is asked again for the last half hour. An event
+/// that a dropped socket lost, or that failed to apply, is otherwise only
+/// seen again after a reconnect; handled ones are skipped by their id.
+const CATCH_UP_EVERY: u64 = 180_000;
 const QUEUE: usize = 64;
 
 /// Identifies one publication that waits for a relay's answer.
@@ -60,9 +64,17 @@ pub enum Effect {
 }
 
 enum State {
-    Waiting { until: u64 },
-    Connecting { since: u64 },
-    Open { last_received: u64, last_ping: u64 },
+    Waiting {
+        until: u64,
+    },
+    Connecting {
+        since: u64,
+    },
+    Open {
+        last_received: u64,
+        last_ping: u64,
+        last_catch_up: u64,
+    },
 }
 struct Queued {
     text: String,
@@ -217,6 +229,7 @@ impl Relays {
         link.state = State::Open {
             last_received: now,
             last_ping: now,
+            last_catch_up: now,
         };
         link.backoff = 1;
         self.effects.push(Effect::Connected(link.url.clone()));
@@ -266,6 +279,18 @@ impl Relays {
         }
     }
 
+    /// The relay answered a ping on the socket of `attempt`. A relay with
+    /// nothing new for us sends no text, and without this a working
+    /// connection would close after a minute of quiet and reconnect.
+    pub fn alive(&mut self, relay: usize, attempt: u64, now: u64) {
+        if !self.current(relay, attempt) {
+            return;
+        }
+        if let State::Open { last_received, .. } = &mut self.links[relay].state {
+            *last_received = now;
+        }
+    }
+
     /// The socket of `attempt` closed or failed to connect.
     pub fn closed(&mut self, relay: usize, attempt: u64, now: u64) {
         if self.current(relay, attempt) {
@@ -310,6 +335,7 @@ impl Relays {
                 State::Open {
                     last_received,
                     ref mut last_ping,
+                    ..
                 } if self.pings => {
                     if now.saturating_sub(last_received) > SILENCE_LIMIT {
                         self.effects.push(Effect::Close { relay });
@@ -320,6 +346,20 @@ impl Relays {
                     }
                 }
                 _ => {}
+            }
+            let link = &mut self.links[relay];
+            if let State::Open {
+                ref mut last_catch_up,
+                ..
+            } = link.state
+            {
+                if now.saturating_sub(*last_catch_up) >= CATCH_UP_EVERY {
+                    *last_catch_up = now;
+                    self.effects.push(Effect::Send {
+                        relay,
+                        text: protocol::catch_up(&self.inbox, now / 1000),
+                    });
+                }
             }
         }
         let expired: Vec<_> = self

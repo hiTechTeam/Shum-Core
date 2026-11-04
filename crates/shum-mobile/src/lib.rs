@@ -239,6 +239,11 @@ impl MobileSession {
         self.lock().closed(relay as usize, attempt, now);
     }
 
+    /// The relay answered a ping: keeps a quiet connection open.
+    pub fn alive(&self, relay: u32, attempt: u64, now: u64) {
+        self.lock().alive(relay as usize, attempt, now);
+    }
+
     /// Call about once a second.
     pub fn tick(&self, now: u64) {
         let mut driver = self.lock();

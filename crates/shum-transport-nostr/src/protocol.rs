@@ -41,6 +41,10 @@ pub const MAX_MESSAGE: usize = 256 * 1024;
 const MAX_CONTENT: usize = 65536;
 /// Stored events older than this are not requested again.
 const LOOKBACK: u64 = 3 * 86400;
+/// What a catch-up asks for again: Shum's wraps are dated up to five
+/// minutes back, other clients' up to two days, so half an hour is the
+/// window for what a live subscription may have missed.
+const CATCH_UP: u64 = 1800;
 
 /// What a relay said, after every check.
 #[derive(Debug, PartialEq)]
@@ -88,6 +92,14 @@ pub fn validate_inbox(public_key: &str) -> Result<()> {
 /// the last three days. `now` is in seconds since 1970.
 pub fn subscription(public_key: &str, now: u64) -> String {
     let since = now.saturating_sub(LOOKBACK);
+    json!(["REQ",SUBSCRIPTION,{"kinds":[1059],"#p":[public_key],"since":since,"limit":100}])
+        .to_string()
+}
+
+/// Asks an open relay again for the last half hour, under the same
+/// subscription: relays replace it, send what they hold, then go on live.
+pub fn catch_up(public_key: &str, now: u64) -> String {
+    let since = now.saturating_sub(CATCH_UP);
     json!(["REQ",SUBSCRIPTION,{"kinds":[1059],"#p":[public_key],"since":since,"limit":100}])
         .to_string()
 }

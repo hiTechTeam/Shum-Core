@@ -333,6 +333,30 @@ fn quiet_relays_are_pinged_and_silent_ones_dropped() {
 }
 
 #[test]
+fn a_quiet_relay_that_answers_pings_stays_open() {
+    let mut r = relays(&[A], true);
+    r.tick(T0);
+    r.effects();
+    open(&mut r, 0, 1, T0);
+    // Nothing new for us for five minutes, but every ping is answered.
+    let mut now = T0;
+    while now < T0 + 300_000 {
+        now += 20_000;
+        r.tick(now);
+        if r.effects().contains(&Effect::Ping { relay: 0 }) {
+            r.alive(0, 1, now);
+        }
+    }
+    r.tick(now + 1);
+    assert!(r.effects().is_empty(), "the connection stays");
+    assert_eq!(r.connected(), vec![A.to_string()]);
+    // An answer from an older socket does not keep the new one alive.
+    r.alive(0, 0, now + 70_000);
+    r.tick(now + 70_000);
+    assert!(r.effects().contains(&Effect::Close { relay: 0 }));
+}
+
+#[test]
 fn waking_connects_waiting_relays_and_checks_open_ones() {
     let mut r = relays(&[A, B], true);
     r.tick(T0);
@@ -365,4 +389,37 @@ fn waking_connects_waiting_relays_and_checks_open_ones() {
     // Waking twice in a row does not open a second connection.
     r.wake(now + 2);
     assert_eq!(r.effects(), vec![Effect::Ping { relay: 0 }]);
+}
+
+#[test]
+fn open_relays_are_asked_again_for_the_last_half_hour() {
+    for pings in [true, false] {
+        let mut r = relays(&[A], pings);
+        r.tick(T0);
+        r.effects();
+        open(&mut r, 0, 1, T0);
+        let mut catch_ups = vec![];
+        let mut now = T0;
+        while now < T0 + 600_000 {
+            now += 1_000;
+            r.tick(now);
+            for effect in r.effects() {
+                match effect {
+                    Effect::Send { relay: 0, text } => catch_ups.push((now, text)),
+                    Effect::Ping { relay: 0 } => r.alive(0, 1, now),
+                    _ => {}
+                }
+            }
+        }
+        // Every three minutes, the same subscription for the last 30 minutes.
+        let times: Vec<_> = catch_ups.iter().map(|(t, _)| (t - T0) / 1000).collect();
+        assert_eq!(times, vec![180, 360, 540], "pings: {pings}");
+        let request: serde_json::Value = serde_json::from_str(&catch_ups[0].1).unwrap();
+        assert_eq!(request[0], "REQ");
+        assert_eq!(request[1], shum_transport_nostr::protocol::SUBSCRIPTION);
+        assert_eq!(
+            request[2]["since"].as_u64().unwrap(),
+            (T0 + 180_000) / 1000 - 1800
+        );
+    }
 }

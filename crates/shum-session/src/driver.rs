@@ -107,6 +107,12 @@ impl<H: Host> Driver<H> {
         self.relays.closed(relay, attempt, now);
     }
 
+    /// The relay answered a ping: the connection is alive though quiet.
+    pub fn alive(&mut self, relay: usize, attempt: u64, now: u64) {
+        self.now = now;
+        self.relays.alive(relay, attempt, now);
+    }
+
     /// Call about once a second.
     pub fn tick(&mut self, now: u64) {
         self.now = now;
