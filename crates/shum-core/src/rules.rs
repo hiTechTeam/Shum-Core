@@ -181,6 +181,15 @@ pub fn nostr_delay_ms(attempts: u32) -> i64 {
             .min(60_000)
     }
 }
+/// After a relay took a message, how long until it goes out to the relays
+/// once more, while no receipt came; `None` when it has gone out enough.
+/// A relay accepting it says nothing of whether the recipient reads that
+/// relay: one that is down or blocked for the recipient would keep the
+/// message from it for good. Copies are told apart by the envelope.
+pub fn nostr_republish_ms(attempts: u32) -> Option<i64> {
+    const DELAYS: [i64; 6] = [60_000, 180_000, 600_000, 1_800_000, 7_200_000, 21_600_000];
+    (attempts < 12).then(|| DELAYS[(attempts.max(1) as usize - 1).min(DELAYS.len() - 1)])
+}
 pub fn ble_delay_ms(attempts: u32) -> i64 {
     10_000 * i64::from(attempts.clamp(1, 6))
 }
@@ -215,11 +224,18 @@ impl DeliveryState {
             }
             return false;
         }
-        if self.nostr_accepted
-            || ![Delivery::Queued, Delivery::Forwarding].contains(&self.status)
+        let delay = if self.nostr_accepted {
+            match nostr_republish_ms(self.nostr_attempts) {
+                Some(delay) => delay,
+                None => return false,
+            }
+        } else {
+            nostr_delay_ms(self.nostr_attempts)
+        };
+        if ![Delivery::Queued, Delivery::Forwarding].contains(&self.status)
             || self
                 .last_nostr_attempt
-                .is_some_and(|t| now.saturating_sub(t) < nostr_delay_ms(self.nostr_attempts))
+                .is_some_and(|t| now.saturating_sub(t) < delay)
         {
             return false;
         }

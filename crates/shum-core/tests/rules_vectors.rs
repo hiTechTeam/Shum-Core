@@ -238,3 +238,32 @@ fn swift_outbox_schedule_relay_ok_and_receipts() {
         );
     }
 }
+
+#[test]
+fn an_accepted_message_goes_out_again_until_a_receipt_comes() {
+    let mut state = DeliveryState::default();
+    let expires = i64::MAX;
+    let mut sends = vec![];
+    // One relay takes the first copy at once; the recipient never answers.
+    assert!(state.attempt_nostr(0, expires));
+    state.relay_result(true);
+    sends.push(0);
+    let mut now = 0;
+    while now < 3 * 24 * 3_600_000 {
+        now += 1_000;
+        if state.attempt_nostr(now, expires) {
+            sends.push(now / 1_000);
+        }
+    }
+    // 1, 3, 10, 30 minutes, 2 hours, then every 6 hours, 12 copies at most.
+    assert_eq!(&sends[..6], &[0, 60, 240, 840, 2_640, 9_840]);
+    assert_eq!(sends.len(), 12);
+    assert!(sends.windows(2).skip(5).all(|w| w[1] - w[0] == 21_600));
+
+    // A receipt ends it.
+    let mut state = DeliveryState::default();
+    assert!(state.attempt_nostr(0, expires));
+    state.relay_result(true);
+    state.status = Delivery::Delivered;
+    assert!(!state.attempt_nostr(10 * 60_000, expires));
+}
