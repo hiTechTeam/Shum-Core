@@ -2,7 +2,7 @@
 //! returned actions. Neither this module nor an action performs I/O.
 use crate::{
     card::Card,
-    packet::{Envelope, OwnCopy, Packet, Plaintext, ProfileSync, Receipt},
+    packet::{Envelope, InvitationAction, OwnCopy, Packet, Plaintext, ProfileSync, Receipt},
     rules::{ble_delay_ms, nostr_delay_ms, profile_delay_ms, Delivery, DeliveryState},
     Error, Result,
 };
@@ -72,9 +72,12 @@ pub enum PushKind {
     Message,
     /// A new invitation: the contact sees a notification.
     Invitation,
-    /// An answer to an invitation: wakes the app silently (protocol section 08).
+    /// A declined invitation: wakes the app silently (protocol section 08).
     #[serde(rename = "invitation_update")]
     InvitationUpdate,
+    /// An accepted invitation: the inviter sees a notification.
+    #[serde(rename = "invitation_accepted")]
+    InvitationAccepted,
     Reaction,
 }
 fn ble(actions: &mut Vec<Action>, peer: &Peer, packet: Packet) {
@@ -447,10 +450,10 @@ impl Outbox {
                 self.pending_push.push(Action::Push {
                     recipient: c.recipient.id(),
                     event: c.id.clone(),
-                    kind: if c.kind == ControlKind::InvitationRequest {
-                        PushKind::Invitation
-                    } else {
-                        PushKind::InvitationUpdate
+                    kind: match c.packet.invitation.as_ref().map(|i| &i.fields.action) {
+                        _ if c.kind == ControlKind::InvitationRequest => PushKind::Invitation,
+                        Some(InvitationAction::Accept) => PushKind::InvitationAccepted,
+                        _ => PushKind::InvitationUpdate,
                     },
                 });
             }
