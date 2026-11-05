@@ -8,7 +8,7 @@ Rust messaging core for Shum: cryptography, Bluetooth and Nostr transports, and 
 
 The current v1 draft is implemented and checked against Swift test vectors. Bluetooth discovery, invitations, messages and read receipts have been tested with an iPhone on macOS. Linux and Windows discovery exists, but GATT server support and platform acceptance are pending.
 
-Multiple devices per profile, history sync and profile relays are planned for v1 stable. Swift and Kotlin bindings use UniFFI; iOS migration is pending. See [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
+Multiple devices per profile, history sync and profile relays are planned for v1 stable. Swift and Kotlin bindings use UniFFI; the iPhone app in the App Store runs on this core. See [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
 
 ## Packages
 

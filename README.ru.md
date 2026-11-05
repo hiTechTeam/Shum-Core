@@ -8,7 +8,7 @@
 
 Черновик v1 реализован и сверяется с тестовыми примерами Swift. На macOS с iPhone проверены поиск по Bluetooth, приглашения, сообщения и прочтение. На Linux и Windows есть поиск, но GATT-сервер и приёмка платформ ещё впереди.
 
-Несколько устройств одного профиля, синхронизация истории и реле профиля входят в будущую v1 stable. Привязки Swift и Kotlin используют UniFFI; переход iOS пока не завершён. План: [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
+Несколько устройств одного профиля, синхронизация истории и реле профиля входят в будущую v1 stable. Привязки Swift и Kotlin используют UniFFI; приложение для iPhone в App Store работает на этом ядре. План: [Shum Protocol](https://github.com/hiTechTeam/Shum-Protocol).
 
 ## Пакеты
 
